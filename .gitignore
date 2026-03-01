@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .DS_Store
+xgb_true_pred.csv
+xgb_true_pred.xlsx
