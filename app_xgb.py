@@ -5,6 +5,7 @@ import streamlit as st
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 from io import BytesIO
 
 st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layout="wide")
@@ -27,8 +28,8 @@ def pick_first_key(d, keys):
 @st.cache_resource
 def load_artifacts():
     meta = joblib.load(ART_DIR / "meta.joblib")
-    Xsc  = joblib.load(ART_DIR / "Xsc.pkl")
-    Ysc  = joblib.load(ART_DIR / "Ysc.pkl")
+    Xsc = joblib.load(ART_DIR / "Xsc.pkl")
+    Ysc = joblib.load(ART_DIR / "Ysc.pkl")
     models = joblib.load(ART_DIR / "xgb_models.joblib")  # list of per-output models
     return meta, Xsc, Ysc, models
 
@@ -47,14 +48,14 @@ CAND_X = ["X_columns", "FEATURES", "features", "feature_names", "X_cols", "input
 CAND_Y = ["Y_columns", "YVARS", "targets", "target_names", "Y_cols", "output_columns"]
 
 FEATURES = pick_first_key(meta, CAND_X)
-YVARS    = pick_first_key(meta, CAND_Y)
+YVARS = pick_first_key(meta, CAND_Y)
 
 if FEATURES is None or YVARS is None:
     st.error("meta.joblib does not contain feature/target names in a recognized format.")
     st.write("Meta keys found:", list(meta.keys()))
     st.stop()
 
-# Training flags (kept internal; not shown to designers)
+# Training flags (internal)
 cfg = meta.get("cfg", {}) if isinstance(meta, dict) else {}
 log_X = bool(meta.get("log_transform_X", cfg.get("log_transform_X", True)))
 log_Y = bool(meta.get("log_transform_Y", cfg.get("log_transform_Y", True)))
@@ -62,10 +63,6 @@ log_Y = bool(meta.get("log_transform_Y", cfg.get("log_transform_Y", True)))
 
 # ----------------------------
 # Preprocessing (MATCH TRAINING)
-# Training used:
-#   X = log1p(clip(X,0,∞)) if log_transform_X
-#   Y = log1p(clip(Y,0,∞)) if log_transform_Y
-# then scaling with Xsc/Ysc
 # ----------------------------
 def fwd_X(df_or_np):
     X = df_or_np.values if hasattr(df_or_np, "values") else np.asarray(df_or_np)
@@ -74,14 +71,15 @@ def fwd_X(df_or_np):
         X = np.log1p(np.clip(X, a_min=0.0, a_max=None)).astype(np.float32)
     return Xsc.transform(X)
 
+
 def inv_Y(Yz):
     Y = Ysc.inverse_transform(Yz)
     if log_Y:
-        Y = np.expm1(Y).astype(np.float32)  # inverse of log1p
+        Y = np.expm1(Y).astype(np.float32)
     return Y
 
+
 def predict_multioutput_xgb(models, X):
-    # Each model predicts one output; stack columns
     outs = [m.predict(X).reshape(-1, 1) for m in models]
     return np.hstack(outs)
 
@@ -103,6 +101,8 @@ FEATURE_UI = {
     "rhoC": {"label": "Longitudinal reinforcement ratio (column)", "unit": "-"},
     "rhoB": {"label": "Longitudinal reinforcement ratio (beam)", "unit": "-"},
 }
+
+
 def nice_label(key: str) -> str:
     ui = FEATURE_UI.get(key, {})
     label = ui.get("label", key)
@@ -114,13 +114,15 @@ def nice_label(key: str) -> str:
 # UI labels + units (outputs)
 # ----------------------------
 OUTPUT_UI = {
-    "F1":   {"unit": "kN"},
-    "K1":   {"unit": "kN/m"},
-    "F2":   {"unit": "kN"},
-    "D2":   {"unit": "m"},
-    "K23":  {"unit": "kN/m"},
+    "F1": {"unit": "kN"},
+    "K1": {"unit": "kN/m"},
+    "F2": {"unit": "kN"},
+    "D2": {"unit": "m"},
+    "K23": {"unit": "kN/m"},
     "Fres": {"unit": "kN"},
 }
+
+
 def nice_out_label(key: str) -> str:
     unit = (OUTPUT_UI.get(key, {}).get("unit", "") or "").strip()
     return f"{key} [{unit}]" if unit else key
@@ -152,7 +154,6 @@ for i, name in enumerate(FEATURES):
         if name in ["NS", "BN"]:
             val = st.number_input(label, min_value=1, value=1, step=1)
         else:
-            # training clipped negatives to 0 before log1p
             val = st.number_input(label, min_value=0.0, value=0.0, format="%.6f")
         inputs.append(val)
 
@@ -161,7 +162,6 @@ if st.button("Predict pushover curve parameters"):
         X_in = np.array(inputs, dtype=np.float32).reshape(1, -1)
         Xz = fwd_X(X_in)
 
-        # Distribution sanity check
         zmax = float(np.max(np.abs(Xz)))
         if zmax > 6:
             st.warning(
@@ -172,27 +172,20 @@ if st.button("Predict pushover curve parameters"):
         Yz = predict_multioutput_xgb(models, Xz)
         Yo = inv_Y(Yz)
 
-        df_raw  = pd.DataFrame(Yo, columns=YVARS)
+        df_raw = pd.DataFrame(Yo, columns=YVARS)
         df_show = df_raw.rename(columns={c: nice_out_label(c) for c in df_raw.columns})
 
         st.success("Prediction")
         st.dataframe(df_show.style.format("{:.6f}"))
 
-        # ----------------------------
-        # Force–Displacement plot
-        # Points:
-        # 1: (F1, F1/K1)
-        # 2: (F2, D2)
-        # 3: (Fres, D2 + (F2 - Fres)/K23)
-        # Plot: x = displacement (m), y = base shear (kN)
-        # ----------------------------
+        # ---- Force–Displacement plot (compact + rounded ticks + end ticks) ----
         try:
             r = df_raw.iloc[0]
-            F1   = float(r["F1"])
-            K1   = float(r["K1"])
-            F2   = float(r["F2"])
-            D2   = float(r["D2"])     # metres
-            K23  = float(r["K23"])
+            F1 = float(r["F1"])
+            K1 = float(r["K1"])
+            F2 = float(r["F2"])
+            D2 = float(r["D2"])  # metres
+            K23 = float(r["K23"])
             Fres = float(r["Fres"])
 
             if abs(K1) < 1e-12 or abs(K23) < 1e-12:
@@ -201,19 +194,50 @@ if st.button("Predict pushover curve parameters"):
                 D1 = F1 / K1
                 D3 = D2 + (F2 - Fres) / K23
 
-                x_m  = [0.0, D1, D2, D3]
+                x_m = [0.0, D1, D2, D3]
                 y_kN = [0.0, F1, F2, Fres]
 
                 plt.rcParams["font.family"] = "Times New Roman"
-                fig, ax = plt.subplots(figsize=(7.2, 4.2))
+
+                # Plot size (edit these if you want)
+                fig, ax = plt.subplots(figsize=(3.2, 2), dpi=160)
                 ax.plot(x_m, y_kN, marker="o", linewidth=2.0, color="blue")
 
                 ax.set_xlabel("Displacement (m)", fontname="Times New Roman")
                 ax.set_ylabel("Base Shear (kN)", fontname="Times New Roman")
                 ax.grid(True, alpha=0.3)
 
+                # Axis limits with padding
+                x_max = max(x_m) if len(x_m) else 1.0
+                y_max = max(y_kN) if len(y_kN) else 1.0
+                raw_x_lim = x_max * 1.05 if x_max > 0 else 1.0
+                raw_y_lim = y_max * 1.05 if y_max > 0 else 1.0
+
+                # Rounded (integer-like) ticks + ensure last tick reaches axis end
+                ax.set_xlim(0.0, raw_x_lim)
+                ax.set_ylim(0.0, raw_y_lim)
+
+                ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
+                ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
+
+                # Force tick computation, then lock the end of axis to the last tick
+                fig.canvas.draw()
+                xt = ax.get_xticks()
+                yt = ax.get_yticks()
+                ax.set_xlim(0.0, float(xt[-1]))
+                ax.set_ylim(0.0, float(yt[-1]))
+
+                # No decimals (rounded labels)
+                ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+                ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+
+                fig.tight_layout(pad=0.6)
+
                 st.subheader("Pushover curve (predicted F–D)")
-                st.pyplot(fig, clear_figure=True)
+                try:
+                    st.pyplot(fig, clear_figure=True, use_container_width=False)
+                except TypeError:
+                    st.pyplot(fig, clear_figure=True)
 
                 # Download plot
                 buf = BytesIO()
@@ -267,7 +291,7 @@ if up is not None:
             Yz = predict_multioutput_xgb(models, Xz)
             Yo = inv_Y(Yz)
 
-            out_raw  = pd.DataFrame(Yo, columns=YVARS)
+            out_raw = pd.DataFrame(Yo, columns=YVARS)
             out_show = out_raw.rename(columns={c: nice_out_label(c) for c in out_raw.columns})
 
             st.success(f"Predicted {len(out_show)} rows.")
