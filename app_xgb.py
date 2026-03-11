@@ -8,6 +8,46 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from io import BytesIO
 
+# ============================================================
+# GLOBAL FONT SETTINGS (EDIT ONLY HERE)
+# ============================================================
+APP_FONT_FAMILY = "Times New Roman"
+
+UI_FONT_SIZE_PX = 16    # Streamlit UI: input/output labels, values, tables, headings
+PLOT_FONT_SIZE_PT = 8  # Matplotlib plot: labels, ticks, legend (points)
+
+# Apply to Streamlit UI (inputs, outputs, tables, text)
+st.markdown(
+    f"""
+    <style>
+    html, body, [class*="css"] {{
+        font-family: "{APP_FONT_FAMILY}", Times, serif !important;
+        font-size: {UI_FONT_SIZE_PX}px !important;
+    }}
+    div[data-testid="stDataFrame"] * {{
+        font-family: "{APP_FONT_FAMILY}", Times, serif !important;
+        font-size: {UI_FONT_SIZE_PX}px !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Apply to Matplotlib plots
+plt.rcParams.update(
+    {
+        "font.family": APP_FONT_FAMILY,
+        "font.size": PLOT_FONT_SIZE_PT,
+        "axes.labelsize": PLOT_FONT_SIZE_PT,
+        "xtick.labelsize": PLOT_FONT_SIZE_PT,
+        "ytick.labelsize": PLOT_FONT_SIZE_PT,
+        "legend.fontsize": PLOT_FONT_SIZE_PT,
+    }
+)
+
+# ============================================================
+# STREAMLIT CONFIG
+# ============================================================
 st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layout="wide")
 ART_DIR = Path(__file__).resolve().parent
 
@@ -159,103 +199,168 @@ for i, name in enumerate(FEATURES):
 
 if st.button("Predict pushover curve parameters"):
     try:
-        X_in = np.array(inputs, dtype=np.float32).reshape(1, -1)
-        Xz = fwd_X(X_in)
+        base_row = {FEATURES[i]: float(inputs[i]) for i in range(len(FEATURES))}
 
-        zmax = float(np.max(np.abs(Xz)))
-        if zmax > 6:
-            st.warning(
-                f"Inputs appear far from the training distribution (max |z| ≈ {zmax:.2f}). Check units/ranges.",
-                icon="⚠️",
-            )
+        def scenario_row(kind: str):
+            r = dict(base_row)
+            infill_keys = ["FM", "TM", "IP", "IP_GS"]
 
-        Yz = predict_multioutput_xgb(models, Xz)
-        Yo = inv_Y(Yz)
+            if kind == "Input":
+                return r
 
-        df_raw = pd.DataFrame(Yo, columns=YVARS)
-        df_show = df_raw.rename(columns={c: nice_out_label(c) for c in df_raw.columns})
+            if kind == "Bare frame":
+                for k in infill_keys:
+                    if k in r:
+                        r[k] = 0.0
+                return r
 
-        st.success("Prediction")
-        st.dataframe(df_show.style.format("{:.6f}"))
+            if kind == "Fully Infilled":
+                if "IP" in r:
+                    r["IP"] = 100.0
+                if "IP_GS" in r:
+                    r["IP_GS"] = 100.0
+                return r
 
-        # ---- Force–Displacement plot (compact + rounded ticks + end ticks) ----
-        try:
-            r = df_raw.iloc[0]
-            F1 = float(r["F1"])
-            K1 = float(r["K1"])
-            F2 = float(r["F2"])
-            D2 = float(r["D2"])  # metres
-            K23 = float(r["K23"])
-            Fres = float(r["Fres"])
+            if kind == "Soft story":
+                if "IP_GS" in r:
+                    r["IP_GS"] = 0.0
+                return r
+
+            return r
+
+        def predict_one(row_dict):
+            X1 = np.array([row_dict[c] for c in FEATURES], dtype=np.float32).reshape(1, -1)
+            Xz1 = fwd_X(X1)
+            Yz1 = predict_multioutput_xgb(models, Xz1)
+            Yo1 = inv_Y(Yz1)
+            return pd.DataFrame(Yo1, columns=YVARS).iloc[0]
+
+        def fd_points(pred_row):
+            F1 = float(pred_row["F1"])
+            K1 = float(pred_row["K1"])
+            F2 = float(pred_row["F2"])
+            D2 = float(pred_row["D2"])  # m
+            K23 = float(pred_row["K23"])
+            Fres = float(pred_row["Fres"])
 
             if abs(K1) < 1e-12 or abs(K23) < 1e-12:
-                st.warning("Cannot plot F–D curve because K1 or K23 is too close to zero.", icon="⚠️")
-            else:
-                D1 = F1 / K1
-                D3 = D2 + (F2 - Fres) / K23
+                return None, "K1 or K23 too close to zero."
 
-                x_m = [0.0, D1, D2, D3]
-                y_kN = [0.0, F1, F2, Fres]
+            D1 = F1 / K1
+            D3 = D2 + (F2 - Fres) / K23
 
-                plt.rcParams["font.family"] = "Times New Roman"
+            x_m = [0.0, D1, D2, D3]
+            y_kN = [0.0, F1, F2, Fres]
+            pts = sorted(zip(x_m, y_kN), key=lambda t: t[0])
+            x_m = [p[0] for p in pts]
+            y_kN = [p[1] for p in pts]
+            return (x_m, y_kN), None
 
-                # Plot size (edit these if you want)
-                fig, ax = plt.subplots(figsize=(3.2, 2), dpi=160)
-                ax.plot(x_m, y_kN, marker="o", linewidth=2.0, color="blue")
+        # Scenario styles: (legend_name, color, linestyle)
+        scenarios = [
+            ("Input", "blue", "-"),             # solid
+            ("Bare frame", "black", "--"),      # dashed
+            ("Fully Infilled", "green", ":"),   # dotted
+            ("Soft story", "red", "-."),        # dash-dot
+        ]
 
-                ax.set_xlabel("Displacement (m)", fontname="Times New Roman")
-                ax.set_ylabel("Base Shear (kN)", fontname="Times New Roman")
-                ax.grid(True, alpha=0.3)
+        curves = []
+        pred_table = []
+        err_msgs = []
 
-                # Axis limits with padding
-                x_max = max(x_m) if len(x_m) else 1.0
-                y_max = max(y_kN) if len(y_kN) else 1.0
-                raw_x_lim = x_max * 1.05 if x_max > 0 else 1.0
-                raw_y_lim = y_max * 1.05 if y_max > 0 else 1.0
+        for name, color, ls in scenarios:
+            row_dict = scenario_row(name)
+            pred = predict_one(row_dict)
 
-                # Rounded (integer-like) ticks + ensure last tick reaches axis end
-                ax.set_xlim(0.0, raw_x_lim)
-                ax.set_ylim(0.0, raw_y_lim)
+            pred_table.append({**pred.to_dict(), "Scenario": name})
 
-                ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
-                ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
+            pts, err = fd_points(pred)
+            if err:
+                err_msgs.append(f"{name}: {err}")
+                continue
 
-                # Force tick computation, then lock the end of axis to the last tick
-                fig.canvas.draw()
-                xt = ax.get_xticks()
-                yt = ax.get_yticks()
-                ax.set_xlim(0.0, float(xt[-1]))
-                ax.set_ylim(0.0, float(yt[-1]))
+            curves.append((name, color, ls, pts[0], pts[1]))
 
-                # No decimals (rounded labels)
-                ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
-                ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+        if err_msgs:
+            st.warning("Some scenarios could not be plotted:\n- " + "\n- ".join(err_msgs), icon="⚠️")
 
-                fig.tight_layout(pad=0.6)
+        # Scenario comparison table
+        df_cmp = pd.DataFrame(pred_table)
+        cols_cmp = ["Scenario"] + [c for c in YVARS if c in df_cmp.columns]
+        df_cmp = df_cmp[cols_cmp]
+        df_cmp_show = df_cmp.rename(columns={c: nice_out_label(c) for c in YVARS if c in df_cmp.columns})
 
-                st.subheader("Pushover curve (predicted F–D)")
-                try:
-                    st.pyplot(fig, clear_figure=True, use_container_width=False)
-                except TypeError:
-                    st.pyplot(fig, clear_figure=True)
+        st.subheader("Scenario comparison (predicted parameters)")
+        num_cols = [c for c in df_cmp_show.columns if c != "Scenario"]
+        st.dataframe(df_cmp_show.style.format("{:.6f}", subset=num_cols))
 
-                # Download plot
-                buf = BytesIO()
-                fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-                buf.seek(0)
-                st.download_button(
-                    "Download F–D plot (PNG)",
-                    data=buf,
-                    file_name="pushover_curve_fd.png",
-                    mime="image/png",
-                )
-        except Exception as e:
-            st.warning(f"Could not generate F–D plot: {e}")
+        # Plot all curves together
+        st.subheader("Pushover curve (predicted F–D) — scenarios")
 
+        fig, ax = plt.subplots(figsize=(3.2, 2.5), dpi=170)
+
+        for name, color, ls, x_m, y_kN in curves:
+            xs = np.linspace(min(x_m), max(x_m), 250)
+            ys = np.interp(xs, x_m, y_kN)
+            ax.plot(xs, ys, linewidth=0.9, color=color, linestyle=ls, label=name)
+
+        ax.set_xlabel("Displacement (m)")
+        ax.set_ylabel("Base Shear (kN)")
+        ax.grid(True, alpha=0.3)
+
+        if curves:
+            all_x = np.concatenate([np.array(c[3], dtype=float) for c in curves])
+            all_y = np.concatenate([np.array(c[4], dtype=float) for c in curves])
+            raw_x_lim = float(np.max(all_x)) * 1.05 if float(np.max(all_x)) > 0 else 1.0
+            raw_y_lim = float(np.max(all_y)) * 1.05 if float(np.max(all_y)) > 0 else 1.0
+        else:
+            raw_x_lim, raw_y_lim = 1.0, 1.0
+
+        ax.set_xlim(0.0, raw_x_lim)
+        ax.set_ylim(0.0, raw_y_lim)
+
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
+        fig.canvas.draw()
+        xt = ax.get_xticks()
+        yt = ax.get_yticks()
+        ax.set_xlim(0.0, float(xt[-1]))
+        ax.set_ylim(0.0, float(yt[-1]))
+        ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+
+        # Legend: upper-right + shorter line samples
+        ax.legend(
+            loc="upper right",
+            frameon=False,
+            handlelength=1.4,
+            handletextpad=0.6,
+            borderaxespad=0.4,
+        )
+
+        fig.tight_layout(pad=0.6)
+
+        try:
+            st.pyplot(fig, clear_figure=True, use_container_width=False)
+        except TypeError:
+            st.pyplot(fig, clear_figure=True)
+
+        # Download plot
+        buf = BytesIO()
+        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
+        buf.seek(0)
         st.download_button(
-            "Download CSV",
-            df_show.to_csv(index=False),
-            "xgb_pred_single.csv",
+            "Download F–D plot (PNG)",
+            data=buf,
+            file_name="pushover_curve_fd_scenarios.png",
+            mime="image/png",
+        )
+
+        # Export the scenario comparison table
+        st.download_button(
+            "Download scenario predictions (CSV)",
+            df_cmp_show.to_csv(index=False),
+            "xgb_pred_scenarios.csv",
             "text/csv",
         )
 
