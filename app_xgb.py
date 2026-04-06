@@ -1,6 +1,5 @@
 import joblib
 import numpy as np
-import pandas as pd
 import streamlit as st
 from pathlib import Path
 
@@ -9,14 +8,22 @@ import matplotlib.ticker as mticker
 from io import BytesIO
 
 # ============================================================
-# GLOBAL FONT SETTINGS (EDIT ONLY HERE)
+# IMPORTANT: CACHE BUST KEY (CHANGE THIS WHENEVER YOU UPDATE ARTIFACTS)
+# ============================================================
+ARTIFACT_VERSION = "2026-03-12-d2fix-v1"
+
+# ============================================================
+# GLOBAL FONT SETTINGS
 # ============================================================
 APP_FONT_FAMILY = "Times New Roman"
+UI_FONT_SIZE_PX = 15
+PLOT_FONT_SIZE_PT = 11
+PLOT_TICK_FONT = 8
+PLOT_LEGEND_FONT = 8
 
-UI_FONT_SIZE_PX = 16    # Streamlit UI: input/output labels, values, tables, headings
-PLOT_FONT_SIZE_PT = 8  # Matplotlib plot: labels, ticks, legend (points)
-
-# Apply to Streamlit UI (inputs, outputs, tables, text)
+# ============================================================
+# COMPACT CSS (inputs)
+# ============================================================
 st.markdown(
     f"""
     <style>
@@ -24,30 +31,37 @@ st.markdown(
         font-family: "{APP_FONT_FAMILY}", Times, serif !important;
         font-size: {UI_FONT_SIZE_PX}px !important;
     }}
-    div[data-testid="stDataFrame"] * {{
-        font-family: "{APP_FONT_FAMILY}", Times, serif !important;
-        font-size: {UI_FONT_SIZE_PX}px !important;
+    div[data-baseweb="select"] > div {{
+        min-height: 30px !important;
+        padding: 0px 6px !important;
+        border-radius: 6px !important;
+        max-width: 190px !important;
+    }}
+    div[data-testid="stTextInput"] input {{
+        min-height: 30px !important;
+        padding: 0px 6px !important;
+        border-radius: 6px !important;
+        max-width: 190px !important;
+    }}
+    div[data-testid="stSelectbox"], div[data-testid="stTextInput"] {{
+        max-width: 195px !important;
     }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Apply to Matplotlib plots
 plt.rcParams.update(
     {
         "font.family": APP_FONT_FAMILY,
         "font.size": PLOT_FONT_SIZE_PT,
         "axes.labelsize": PLOT_FONT_SIZE_PT,
-        "xtick.labelsize": PLOT_FONT_SIZE_PT,
-        "ytick.labelsize": PLOT_FONT_SIZE_PT,
-        "legend.fontsize": PLOT_FONT_SIZE_PT,
+        "xtick.labelsize": PLOT_TICK_FONT,
+        "ytick.labelsize": PLOT_TICK_FONT,
+        "legend.fontsize": PLOT_LEGEND_FONT,
     }
 )
 
-# ============================================================
-# STREAMLIT CONFIG
-# ============================================================
 st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layout="wide")
 ART_DIR = Path(__file__).resolve().parent
 
@@ -62,48 +76,64 @@ def pick_first_key(d, keys):
     return None
 
 
-# ----------------------------
-# Load artifacts
-# ----------------------------
+def safe_float_from_text(s: str, default: float = 0.0) -> float:
+    try:
+        if s is None:
+            return default
+        s = str(s).strip()
+        if s == "":
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+# ============================================================
+# LOAD ARTIFACTS (CACHED) — versioned to force refresh
+# ============================================================
 @st.cache_resource
-def load_artifacts():
+def load_artifacts(_version: str):
     meta = joblib.load(ART_DIR / "meta.joblib")
     Xsc = joblib.load(ART_DIR / "Xsc.pkl")
     Ysc = joblib.load(ART_DIR / "Ysc.pkl")
-    models = joblib.load(ART_DIR / "xgb_models.joblib")  # list of per-output models
+    models = joblib.load(ART_DIR / "xgb_models.joblib")
+    # best_params.joblib is optional; the app doesn't need it for prediction
     return meta, Xsc, Ysc, models
 
 
 try:
-    meta, Xsc, Ysc, models = load_artifacts()
+    meta, Xsc, Ysc, models = load_artifacts(ARTIFACT_VERSION)
 except Exception as e:
     st.error(f"Artifact load failed: {e}")
     st.stop()
 
 
-# ----------------------------
-# Resolve schema
-# ----------------------------
+# ============================================================
+# SCHEMA + TRAINING FLAGS
+# ============================================================
 CAND_X = ["X_columns", "FEATURES", "features", "feature_names", "X_cols", "input_columns"]
 CAND_Y = ["Y_columns", "YVARS", "targets", "target_names", "Y_cols", "output_columns"]
-
 FEATURES = pick_first_key(meta, CAND_X)
 YVARS = pick_first_key(meta, CAND_Y)
 
 if FEATURES is None or YVARS is None:
-    st.error("meta.joblib does not contain feature/target names in a recognized format.")
-    st.write("Meta keys found:", list(meta.keys()))
+    st.error("meta.joblib missing FEATURES/YVARS (X_columns/Y_columns).")
+    st.write("Meta keys found:", list(meta.keys()) if isinstance(meta, dict) else type(meta))
     st.stop()
 
-# Training flags (internal)
 cfg = meta.get("cfg", {}) if isinstance(meta, dict) else {}
 log_X = bool(meta.get("log_transform_X", cfg.get("log_transform_X", True)))
 log_Y = bool(meta.get("log_transform_Y", cfg.get("log_transform_Y", True)))
 
+# Optional hint if you stored it in meta (not required)
+# If your new model outputs D2 already in meters (recommended), keep this as "m".
+# If you changed the model to output D2 in mm, set this to "mm" in meta or here.
+D2_UNIT = (meta.get("D2_unit", "m") if isinstance(meta, dict) else "m").lower()  # "m" or "mm"
 
-# ----------------------------
-# Preprocessing (MATCH TRAINING)
-# ----------------------------
+
+# ============================================================
+# PREPROCESSING (MUST MATCH TRAINING)
+# ============================================================
 def fwd_X(df_or_np):
     X = df_or_np.values if hasattr(df_or_np, "values") else np.asarray(df_or_np)
     X = X.astype(np.float32, copy=False)
@@ -124,9 +154,9 @@ def predict_multioutput_xgb(models, X):
     return np.hstack(outs)
 
 
-# ----------------------------
-# UI labels + units (inputs)
-# ----------------------------
+# ============================================================
+# UI LABELS
+# ============================================================
 FEATURE_UI = {
     "NS": {"label": "Number of stories", "unit": "stories"},
     "BW": {"label": "Bay width", "unit": "mm"},
@@ -138,8 +168,8 @@ FEATURE_UI = {
     "FCK": {"label": "Concrete strength (fck)", "unit": "MPa"},
     "AC": {"label": "Area of column", "unit": "mm^2"},
     "AB": {"label": "Area of beam", "unit": "mm^2"},
-    "rhoC": {"label": "Longitudinal reinforcement ratio (column)", "unit": "-"},
-    "rhoB": {"label": "Longitudinal reinforcement ratio (beam)", "unit": "-"},
+    "rhoC": {"label": "Reinf. ratio (column)", "unit": "-"},
+    "rhoB": {"label": "Reinf. ratio (beam)", "unit": "-"},
 }
 
 
@@ -150,202 +180,238 @@ def nice_label(key: str) -> str:
     return f"{label} ({key}) [{unit}]" if unit else f"{label} ({key})"
 
 
-# ----------------------------
-# UI labels + units (outputs)
-# ----------------------------
-OUTPUT_UI = {
-    "F1": {"unit": "kN"},
-    "K1": {"unit": "kN/m"},
-    "F2": {"unit": "kN"},
-    "D2": {"unit": "m"},
-    "K23": {"unit": "kN/m"},
-    "Fres": {"unit": "kN"},
-}
+# Dropdown constraints (as you set earlier)
+NS_OPTIONS = list(range(1, 13))
+BW_OPTIONS = [4000, 6000]
+BN_OPTIONS = list(range(1, 9))
+FM_OPTIONS = [3, 6, 9, 15]
+TM_OPTIONS = [115, 230]
+IP_OPTIONS = list(range(1, 101))
+IPGS_OPTIONS = list(range(1, 101))
+FCK_OPTIONS = [30, 40]
 
 
-def nice_out_label(key: str) -> str:
-    unit = (OUTPUT_UI.get(key, {}).get("unit", "") or "").strip()
-    return f"{key} [{unit}]" if unit else key
+# ============================================================
+# AXIS END RULE (fixed drift end)
+# ============================================================
+def target_end_mm_from_NS(ns: float) -> float:
+    ns_i = int(round(float(ns)))
+    fixed = {2: 150.0, 4: 300.0, 8: 600.0, 12: 900.0}
+    return fixed.get(ns_i, 75.0 * float(ns_i))
 
 
-# ----------------------------
-# App layout
-# ----------------------------
+# ============================================================
+# SCENARIOS
+# ============================================================
+def scenario_row(base_row, kind: str):
+    r = dict(base_row)
+    infill_keys = ["FM", "TM", "IP", "IP_GS"]
+    if kind == "Input":
+        return r
+    if kind == "Bare frame":
+        for k in infill_keys:
+            if k in r:
+                r[k] = 0.0
+        return r
+    if kind == "Fully Infilled":
+        r["IP"] = 100.0
+        r["IP_GS"] = 100.0
+        return r
+    if kind == "Soft story":
+        r["IP_GS"] = 0.0
+        return r
+    return r
+
+
+def predict_one(row_dict):
+    X1 = np.array([row_dict[c] for c in FEATURES], dtype=np.float32).reshape(1, -1)
+    Xz1 = fwd_X(X1)
+    Yz1 = predict_multioutput_xgb(models, Xz1)
+    Yo1 = inv_Y(Yz1)[0]
+    return {YVARS[i]: float(Yo1[i]) for i in range(len(YVARS))}
+
+
+def curve_key_points_mm(pred):
+    """
+    D2 unit handling:
+      - If D2_UNIT == "m"  -> D2 is meters (recommended) -> convert to mm by *1000
+      - If D2_UNIT == "mm" -> D2 already mm -> keep as is
+    """
+    F1 = float(pred["F1"])
+    K1 = float(pred["K1"])
+    F2 = float(pred["F2"])
+    D2 = float(pred["D2"])
+    K23 = float(pred["K23"])
+    Fres = float(pred["Fres"])
+
+    if abs(K1) < 1e-12 or abs(K23) < 1e-12:
+        return None, "K1 or K23 too close to zero."
+
+    # Displacements consistent with K in kN/m:
+    # D1 = F1/K1 (meters), D3 = D2 + (F2-Fres)/K23 (meters) if D2 is meters
+    if D2_UNIT == "mm":
+        # If D2 is mm, convert to meters for the internal K-based displacement algebra
+        D2_m = D2 / 1000.0
+    else:
+        D2_m = D2
+
+    D1_m = F1 / K1
+    D3_m = D2_m + (F2 - Fres) / K23
+
+    # Convert to mm for plotting
+    D1_mm = 1000.0 * D1_m
+    D2_mm = 1000.0 * D2_m
+    D3_mm = 1000.0 * D3_m
+
+    x = [0.0, D1_mm, D2_mm, D3_mm]
+    y = [0.0, F1, F2, Fres]
+    pts = sorted(zip(x, y), key=lambda t: t[0])
+    return ([p[0] for p in pts], [p[1] for p in pts]), None
+
+
+def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
+    last_y = float(y_kN[-1])
+    if x_mm[-1] < axis_end_mm:
+        x_mm = x_mm + [axis_end_mm]
+        y_kN = y_kN + [last_y]
+    else:
+        # clip any beyond axis_end
+        pts = [(xx, yy) for xx, yy in zip(x_mm, y_kN) if xx <= axis_end_mm]
+        if not pts:
+            pts = [(0.0, 0.0)]
+        x_mm = [p[0] for p in pts]
+        y_kN = [p[1] for p in pts]
+        if x_mm[-1] < axis_end_mm:
+            x_mm.append(axis_end_mm)
+            y_kN.append(last_y)
+    return x_mm, y_kN
+
+
+# ============================================================
+# PAGE
+# ============================================================
 st.title("Pushover Curve Predictor (XGB)")
-st.caption("Enter inputs in the shown units. Preprocessing is handled automatically.")
+st.caption("This app uses updated artifacts. If you update artifacts again, change ARTIFACT_VERSION.")
 
-st.sidebar.header("Model info")
-st.sidebar.write(f"Inputs: {len(FEATURES)}")
-st.sidebar.write(f"Outputs: {len(YVARS)}")
-st.sidebar.write("Preprocessing: handled automatically")
-st.sidebar.write(f"Model type: XGBoost (per-output models: {len(models)})")
+left, right = st.columns([0.38, 0.62], gap="small")
 
+if "inputs_dict" not in st.session_state:
+    st.session_state["inputs_dict"] = {}
 
-# ----------------------------
-# Single case prediction
-# ----------------------------
-st.subheader("Pushover curve prediction")
-cols = st.columns(3)
-inputs = []
+with left:
+    st.subheader("Inputs")
+    pad_l, form_col, pad_r = st.columns([0.10, 0.80, 0.10])
 
-for i, name in enumerate(FEATURES):
-    with cols[i % 3]:
-        label = nice_label(name)
-        if name in ["NS", "BN"]:
-            val = st.number_input(label, min_value=1, value=1, step=1)
-        else:
-            val = st.number_input(label, min_value=0.0, value=0.0, format="%.6f")
-        inputs.append(val)
+    with form_col:
+        inputs = {}
+        for name in FEATURES:
+            label = nice_label(name)
+            if name == "NS":
+                inputs[name] = float(st.selectbox(label, NS_OPTIONS, index=1 if 2 in NS_OPTIONS else 0))
+            elif name == "BW":
+                inputs[name] = float(st.selectbox(label, BW_OPTIONS, index=0))
+            elif name == "BN":
+                inputs[name] = float(st.selectbox(label, BN_OPTIONS, index=0))
+            elif name == "FM":
+                inputs[name] = float(st.selectbox(label, FM_OPTIONS, index=0))
+            elif name == "TM":
+                inputs[name] = float(st.selectbox(label, TM_OPTIONS, index=0))
+            elif name == "IP":
+                inputs[name] = float(st.selectbox(label, IP_OPTIONS, index=49))
+            elif name == "IP_GS":
+                inputs[name] = float(st.selectbox(label, IPGS_OPTIONS, index=49))
+            elif name == "FCK":
+                inputs[name] = float(st.selectbox(label, FCK_OPTIONS, index=0))
+            elif name in ["AC", "AB", "rhoC", "rhoB"]:
+                txt = st.text_input(label, value="0.00")
+                inputs[name] = safe_float_from_text(txt, default=0.0)
+            else:
+                txt = st.text_input(label, value="0.00")
+                inputs[name] = safe_float_from_text(txt, default=0.0)
 
-if st.button("Predict pushover curve parameters"):
-    try:
-        base_row = {FEATURES[i]: float(inputs[i]) for i in range(len(FEATURES))}
+        st.session_state["inputs_dict"] = inputs
 
-        def scenario_row(kind: str):
-            r = dict(base_row)
-            infill_keys = ["FM", "TM", "IP", "IP_GS"]
+with right:
+    st.subheader("Outputs")
+    run = st.button("Predict pushover curve parameters")
 
-            if kind == "Input":
-                return r
+    if "run_state" not in st.session_state:
+        st.session_state["run_state"] = False
+    if run:
+        st.session_state["run_state"] = True
 
-            if kind == "Bare frame":
-                for k in infill_keys:
-                    if k in r:
-                        r[k] = 0.0
-                return r
+    if st.session_state["run_state"]:
+        base_row = dict(st.session_state["inputs_dict"])
+        ns_base = base_row.get("NS", 2.0)
 
-            if kind == "Fully Infilled":
-                if "IP" in r:
-                    r["IP"] = 100.0
-                if "IP_GS" in r:
-                    r["IP_GS"] = 100.0
-                return r
+        # Desired axis end (mm)
+        axis_end = target_end_mm_from_NS(ns_base)
 
-            if kind == "Soft story":
-                if "IP_GS" in r:
-                    r["IP_GS"] = 0.0
-                return r
-
-            return r
-
-        def predict_one(row_dict):
-            X1 = np.array([row_dict[c] for c in FEATURES], dtype=np.float32).reshape(1, -1)
-            Xz1 = fwd_X(X1)
-            Yz1 = predict_multioutput_xgb(models, Xz1)
-            Yo1 = inv_Y(Yz1)
-            return pd.DataFrame(Yo1, columns=YVARS).iloc[0]
-
-        def fd_points(pred_row):
-            F1 = float(pred_row["F1"])
-            K1 = float(pred_row["K1"])
-            F2 = float(pred_row["F2"])
-            D2 = float(pred_row["D2"])  # m
-            K23 = float(pred_row["K23"])
-            Fres = float(pred_row["Fres"])
-
-            if abs(K1) < 1e-12 or abs(K23) < 1e-12:
-                return None, "K1 or K23 too close to zero."
-
-            D1 = F1 / K1
-            D3 = D2 + (F2 - Fres) / K23
-
-            x_m = [0.0, D1, D2, D3]
-            y_kN = [0.0, F1, F2, Fres]
-            pts = sorted(zip(x_m, y_kN), key=lambda t: t[0])
-            x_m = [p[0] for p in pts]
-            y_kN = [p[1] for p in pts]
-            return (x_m, y_kN), None
-
-        # Scenario styles: (legend_name, color, linestyle)
         scenarios = [
-            ("Input", "blue", "-"),             # solid
-            ("Bare frame", "black", "--"),      # dashed
-            ("Fully Infilled", "green", ":"),   # dotted
-            ("Soft story", "red", "-."),        # dash-dot
+            ("Input", "blue", "-"),
+            ("Bare frame", "black", "--"),
+            ("Fully Infilled", "green", ":"),
+            ("Soft story", "red", "-."),
         ]
 
         curves = []
-        pred_table = []
         err_msgs = []
 
         for name, color, ls in scenarios:
-            row_dict = scenario_row(name)
+            row_dict = scenario_row(base_row, name)
             pred = predict_one(row_dict)
 
-            pred_table.append({**pred.to_dict(), "Scenario": name})
-
-            pts, err = fd_points(pred)
+            pts, err = curve_key_points_mm(pred)
             if err:
                 err_msgs.append(f"{name}: {err}")
                 continue
 
-            curves.append((name, color, ls, pts[0], pts[1]))
+            x_mm, y_kN = pts
+            x2, y2 = extend_to_axis_end(list(x_mm), list(y_kN), axis_end)
+            curves.append((name, color, ls, x2, y2))
 
         if err_msgs:
             st.warning("Some scenarios could not be plotted:\n- " + "\n- ".join(err_msgs), icon="⚠️")
 
-        # Scenario comparison table
-        df_cmp = pd.DataFrame(pred_table)
-        cols_cmp = ["Scenario"] + [c for c in YVARS if c in df_cmp.columns]
-        df_cmp = df_cmp[cols_cmp]
-        df_cmp_show = df_cmp.rename(columns={c: nice_out_label(c) for c in YVARS if c in df_cmp.columns})
+        st.subheader("F–D plot (scenarios)")
 
-        st.subheader("Scenario comparison (predicted parameters)")
-        num_cols = [c for c in df_cmp_show.columns if c != "Scenario"]
-        st.dataframe(df_cmp_show.style.format("{:.6f}", subset=num_cols))
+        fig, ax = plt.subplots(figsize=(2.6, 2.1), dpi=170)
 
-        # Plot all curves together
-        st.subheader("Pushover curve (predicted F–D) — scenarios")
-
-        fig, ax = plt.subplots(figsize=(3.2, 2.5), dpi=170)
-
-        for name, color, ls, x_m, y_kN in curves:
-            xs = np.linspace(min(x_m), max(x_m), 250)
-            ys = np.interp(xs, x_m, y_kN)
+        xs = np.linspace(0.0, axis_end, 450)
+        for name, color, ls, x_mm, y_kN in curves:
+            ys = np.interp(xs, x_mm, y_kN)
             ax.plot(xs, ys, linewidth=0.9, color=color, linestyle=ls, label=name)
 
-        ax.set_xlabel("Displacement (m)")
+        ax.set_xlabel("Displacement (mm)")
         ax.set_ylabel("Base Shear (kN)")
         ax.grid(True, alpha=0.3)
+        ax.set_xlim(0.0, axis_end)
 
         if curves:
-            all_x = np.concatenate([np.array(c[3], dtype=float) for c in curves])
             all_y = np.concatenate([np.array(c[4], dtype=float) for c in curves])
-            raw_x_lim = float(np.max(all_x)) * 1.05 if float(np.max(all_x)) > 0 else 1.0
-            raw_y_lim = float(np.max(all_y)) * 1.05 if float(np.max(all_y)) > 0 else 1.0
+            y_max = float(np.max(all_y)) * 1.05 if float(np.max(all_y)) > 0 else 1.0
         else:
-            raw_x_lim, raw_y_lim = 1.0, 1.0
-
-        ax.set_xlim(0.0, raw_x_lim)
-        ax.set_ylim(0.0, raw_y_lim)
+            y_max = 1.0
+        ax.set_ylim(0.0, y_max)
 
         ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
         ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
-        fig.canvas.draw()
-        xt = ax.get_xticks()
-        yt = ax.get_yticks()
-        ax.set_xlim(0.0, float(xt[-1]))
-        ax.set_ylim(0.0, float(yt[-1]))
         ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
         ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
 
-        # Legend: upper-right + shorter line samples
+        ax.tick_params(axis="both", labelsize=PLOT_TICK_FONT)
         ax.legend(
             loc="upper right",
             frameon=False,
-            handlelength=1.4,
+            handlelength=1.2,
             handletextpad=0.6,
-            borderaxespad=0.4,
+            borderaxespad=0.3,
+            fontsize=PLOT_LEGEND_FONT,
         )
 
-        fig.tight_layout(pad=0.6)
+        fig.tight_layout(pad=0.5)
+        st.pyplot(fig, clear_figure=True, use_container_width=False)
 
-        try:
-            st.pyplot(fig, clear_figure=True, use_container_width=False)
-        except TypeError:
-            st.pyplot(fig, clear_figure=True)
-
-        # Download plot
         buf = BytesIO()
         fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
         buf.seek(0)
@@ -355,59 +421,3 @@ if st.button("Predict pushover curve parameters"):
             file_name="pushover_curve_fd_scenarios.png",
             mime="image/png",
         )
-
-        # Export the scenario comparison table
-        st.download_button(
-            "Download scenario predictions (CSV)",
-            df_cmp_show.to_csv(index=False),
-            "xgb_pred_scenarios.csv",
-            "text/csv",
-        )
-
-    except Exception as e:
-        st.error(f"Prediction failed: {e}")
-
-
-st.markdown("---")
-
-
-# ----------------------------
-# Batch prediction
-# ----------------------------
-st.subheader("Batch prediction (CSV)")
-up = st.file_uploader("Upload CSV with EXACT columns (same names & order as training features).", type=["csv"])
-if up is not None:
-    try:
-        df_in = pd.read_csv(up)
-        if list(df_in.columns) != list(FEATURES):
-            st.error("CSV columns must match training feature names AND order exactly.")
-            st.write("Expected:", FEATURES)
-            st.write("Found:", list(df_in.columns))
-        else:
-            Xz = fwd_X(df_in)
-
-            zmax = float(np.max(np.abs(Xz)))
-            if zmax > 6:
-                st.warning(
-                    f"Some rows appear far from the training distribution (max |z| ≈ {zmax:.2f}). Check units/ranges.",
-                    icon="⚠️",
-                )
-
-            Yz = predict_multioutput_xgb(models, Xz)
-            Yo = inv_Y(Yz)
-
-            out_raw = pd.DataFrame(Yo, columns=YVARS)
-            out_show = out_raw.rename(columns={c: nice_out_label(c) for c in out_raw.columns})
-
-            st.success(f"Predicted {len(out_show)} rows.")
-            st.dataframe(out_show.head().style.format("{:.6f}"))
-
-            st.download_button(
-                "Download predictions",
-                out_show.to_csv(index=False),
-                file_name="xgb_predictions.csv",
-                mime="text/csv",
-            )
-
-    except Exception as e:
-        st.error(f"Failed to score file: {e}")
