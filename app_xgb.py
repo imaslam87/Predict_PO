@@ -1,3 +1,4 @@
+import os
 import joblib
 import numpy as np
 import pandas as pd
@@ -7,11 +8,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from io import BytesIO
-
-# ============================================================
-# IMPORTANT: CACHE BUST KEY (CHANGE THIS WHENEVER YOU UPDATE ARTIFACTS)
-# ============================================================
-ARTIFACT_VERSION = "2026-03-12-d2fix-v1"
 
 # ============================================================
 # GLOBAL FONT SETTINGS
@@ -66,71 +62,65 @@ plt.rcParams.update(
 st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layout="wide")
 ART_DIR = Path(__file__).resolve().parent
 
+# ============================================================
+# IMPORTANT MODEL/UNIT ASSUMPTIONS (per your retraining)
+# ============================================================
+# Your updated model predicts D2 in METRES (because you trained with D2/1000 -> metres)
+D2_IS_METRES = True
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def pick_first_key(d, keys):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return None
-
-
-def safe_float_from_text(s: str, default: float = 0.0) -> float:
-    try:
-        if s is None:
-            return default
-        s = str(s).strip()
-        if s == "":
-            return default
-        return float(s)
-    except Exception:
-        return default
-
+# You asked to correct units of K1 and K23 to kN/mm WITHOUT changing values.
+# So for curve construction we treat K1,K23 numerically as kN/mm.
+K_UNITS_ARE_KN_PER_MM = True
 
 # ============================================================
-# LOAD ARTIFACTS (CACHED) — versioned to force refresh
+# Artifact signature to force reload whenever artifacts change
+# (fixes "nothing changed" / old artifacts still loading)
 # ============================================================
+ARTIFACT_FILES = ["meta.joblib", "Xsc.pkl", "Ysc.pkl", "xgb_models.joblib"]
+
+def artifact_signature(files):
+    sig = []
+    for f in files:
+        p = ART_DIR / f
+        try:
+            sig.append(f"{f}:mtime={int(os.path.getmtime(p))}:size={os.path.getsize(p)}")
+        except Exception:
+            sig.append(f"{f}:missing")
+    return "|".join(sig)
+
+ART_SIG = artifact_signature(ARTIFACT_FILES)
+
 @st.cache_resource
-def load_artifacts(_version: str):
+def load_artifacts(_sig: str):
     meta = joblib.load(ART_DIR / "meta.joblib")
-    Xsc = joblib.load(ART_DIR / "Xsc.pkl")
-    Ysc = joblib.load(ART_DIR / "Ysc.pkl")
+    Xsc  = joblib.load(ART_DIR / "Xsc.pkl")
+    Ysc  = joblib.load(ART_DIR / "Ysc.pkl")
     models = joblib.load(ART_DIR / "xgb_models.joblib")
     return meta, Xsc, Ysc, models
 
-
 try:
-    meta, Xsc, Ysc, models = load_artifacts(ARTIFACT_VERSION)
+    meta, Xsc, Ysc, models = load_artifacts(ART_SIG)
 except Exception as e:
     st.error(f"Artifact load failed: {e}")
     st.stop()
 
-
 # ============================================================
-# SCHEMA + TRAINING FLAGS
+# Schema (your meta contains FEATURES/YVARS)
 # ============================================================
-CAND_X = ["X_columns", "FEATURES", "features", "feature_names", "X_cols", "input_columns"]
-CAND_Y = ["Y_columns", "YVARS", "targets", "target_names", "Y_cols", "output_columns"]
-FEATURES = pick_first_key(meta, CAND_X)
-YVARS = pick_first_key(meta, CAND_Y)
+FEATURES = meta.get("FEATURES", None)
+YVARS    = meta.get("YVARS", None)
+cfg      = meta.get("cfg", {}) if isinstance(meta, dict) else {}
 
 if FEATURES is None or YVARS is None:
-    st.error("meta.joblib missing FEATURES/YVARS (X_columns/Y_columns).")
-    st.write("Meta keys found:", list(meta.keys()) if isinstance(meta, dict) else type(meta))
+    st.error("meta.joblib does not contain FEATURES and YVARS.")
+    st.write("Meta keys:", list(meta.keys()) if isinstance(meta, dict) else type(meta))
     st.stop()
 
-cfg = meta.get("cfg", {}) if isinstance(meta, dict) else {}
-log_X = bool(meta.get("log_transform_X", cfg.get("log_transform_X", True)))
-log_Y = bool(meta.get("log_transform_Y", cfg.get("log_transform_Y", True)))
-
-# Optional meta hint: "m" or "mm"
-D2_UNIT = (meta.get("D2_unit", "m") if isinstance(meta, dict) else "m").lower()
-
+log_X = bool(cfg.get("log_transform_X", True))
+log_Y = bool(cfg.get("log_transform_Y", True))
 
 # ============================================================
-# PREPROCESSING (MUST MATCH TRAINING)
+# Preprocessing (must match training)
 # ============================================================
 def fwd_X(df_or_np):
     X = df_or_np.values if hasattr(df_or_np, "values") else np.asarray(df_or_np)
@@ -139,21 +129,25 @@ def fwd_X(df_or_np):
         X = np.log1p(np.clip(X, a_min=0.0, a_max=None)).astype(np.float32)
     return Xsc.transform(X)
 
-
 def inv_Y(Yz):
     Y = Ysc.inverse_transform(Yz)
     if log_Y:
         Y = np.expm1(Y).astype(np.float32)
     return Y
 
-
 def predict_multioutput_xgb(models, X):
     outs = [m.predict(X).reshape(-1, 1) for m in models]
     return np.hstack(outs)
 
+def predict_one(row_dict):
+    X1 = np.array([row_dict[c] for c in FEATURES], dtype=np.float32).reshape(1, -1)
+    Xz1 = fwd_X(X1)
+    Yz1 = predict_multioutput_xgb(models, Xz1)
+    Yo1 = inv_Y(Yz1)[0]
+    return {YVARS[i]: float(Yo1[i]) for i in range(len(YVARS))}
 
 # ============================================================
-# UI LABELS
+# UI labels
 # ============================================================
 FEATURE_UI = {
     "NS": {"label": "Number of stories", "unit": "stories"},
@@ -169,22 +163,12 @@ FEATURE_UI = {
     "rhoC": {"label": "Reinf. ratio (column)", "unit": "-"},
     "rhoB": {"label": "Reinf. ratio (beam)", "unit": "-"},
 }
-OUTPUT_UNITS = {
-    "F1": "kN",
-    "K1": "kN/m",
-    "F2": "kN",
-    "D2": "m" if D2_UNIT == "m" else "mm",
-    "K23": "kN/m",
-    "Fres": "kN",
-}
-
 
 def nice_label(key: str) -> str:
     ui = FEATURE_UI.get(key, {})
     label = ui.get("label", key)
     unit = (ui.get("unit", "") or "").strip()
     return f"{label} ({key}) [{unit}]" if unit else f"{label} ({key})"
-
 
 # Dropdown constraints
 NS_OPTIONS = list(range(1, 13))
@@ -196,12 +180,10 @@ IP_OPTIONS = list(range(1, 101))
 IPGS_OPTIONS = list(range(1, 101))
 FCK_OPTIONS = [30, 40]
 
-
-def target_end_mm_from_NS(ns: float) -> float:
+def axis_end_mm_from_NS(ns: float) -> float:
     ns_i = int(round(float(ns)))
     fixed = {2: 150.0, 4: 300.0, 8: 600.0, 12: 900.0}
     return fixed.get(ns_i, 75.0 * float(ns_i))
-
 
 def scenario_row(base_row, kind: str):
     r = dict(base_row)
@@ -222,62 +204,48 @@ def scenario_row(base_row, kind: str):
         return r
     return r
 
-
-def predict_one(row_dict):
-    X1 = np.array([row_dict[c] for c in FEATURES], dtype=np.float32).reshape(1, -1)
-    Xz1 = fwd_X(X1)
-    Yz1 = predict_multioutput_xgb(models, Xz1)
-    Yo1 = inv_Y(Yz1)[0]
-    return {YVARS[i]: float(Yo1[i]) for i in range(len(YVARS))}
-
-
+# ============================================================
+# Curve construction (D2 from model is metres -> convert to mm)
+# K1/K23 treated as kN/mm (no scaling, per your request)
+# ============================================================
 def curve_key_points_mm(pred):
     F1 = float(pred["F1"])
     K1 = float(pred["K1"])
     F2 = float(pred["F2"])
-    D2 = float(pred["D2"])
     K23 = float(pred["K23"])
     Fres = float(pred["Fres"])
+
+    # D2 in metres from model
+    D2_m = float(pred["D2"]) if D2_IS_METRES else float(pred["D2"]) / 1000.0
+    D2_mm = 1000.0 * D2_m
 
     if abs(K1) < 1e-12 or abs(K23) < 1e-12:
         return None, "K1 or K23 too close to zero."
 
-    if D2_UNIT == "mm":
-        D2_m = D2 / 1000.0
-    else:
-        D2_m = D2
-
-    D1_m = F1 / K1
-    D3_m = D2_m + (F2 - Fres) / K23
-
-    D1_mm = 1000.0 * D1_m
-    D2_mm = 1000.0 * D2_m
-    D3_mm = 1000.0 * D3_m
+    # Since K1,K23 are treated as kN/mm, displacements come out in mm directly:
+    # D1_mm = F1/K1
+    # D3_mm = D2_mm + (F2 - Fres)/K23
+    D1_mm = F1 / K1
+    D3_mm = D2_mm + (F2 - Fres) / K23
 
     x = [0.0, D1_mm, D2_mm, D3_mm]
     y = [0.0, F1, F2, Fres]
     pts = sorted(zip(x, y), key=lambda t: t[0])
     x_mm = [p[0] for p in pts]
     y_kN = [p[1] for p in pts]
-    return (x_mm, y_kN), None
-
+    return (x_mm, y_kN, D2_m, D2_mm), None
 
 def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
     last_y = float(y_kN[-1])
-    if x_mm[-1] < axis_end_mm:
-        x_mm = x_mm + [axis_end_mm]
-        y_kN = y_kN + [last_y]
-    else:
-        pts = [(xx, yy) for xx, yy in zip(x_mm, y_kN) if xx <= axis_end_mm]
-        if not pts:
-            pts = [(0.0, 0.0)]
-        x_mm = [p[0] for p in pts]
-        y_kN = [p[1] for p in pts]
-        if x_mm[-1] < axis_end_mm:
-            x_mm.append(axis_end_mm)
-            y_kN.append(last_y)
-    return x_mm, y_kN
-
+    pts = [(xx, yy) for xx, yy in zip(x_mm, y_kN) if xx <= axis_end_mm]
+    if not pts:
+        pts = [(0.0, 0.0)]
+    x2 = [p[0] for p in pts]
+    y2 = [p[1] for p in pts]
+    if x2[-1] < axis_end_mm:
+        x2.append(axis_end_mm)
+        y2.append(last_y)
+    return x2, y2
 
 # ============================================================
 # PAGE
@@ -335,27 +303,26 @@ with right:
     if st.session_state["run_state"]:
         base_row = dict(st.session_state["inputs_dict"])
         ns_base = base_row.get("NS", 2.0)
-        axis_end = target_end_mm_from_NS(ns_base)
+        axis_end = axis_end_mm_from_NS(ns_base)
 
-        # ------------------------------
-        # OUTPUT ROW FOR THE GIVEN INPUT
-        # ------------------------------
+        # ---- One-row output for INPUT case (so you can verify D2) ----
         pred_input = predict_one(base_row)
+        D2_m = float(pred_input["D2"])
+        D2_mm = 1000.0 * D2_m
 
-        # One-row display (no extra debug block)
-        out_cols = ["F1", "K1", "F2", "D2", "K23", "Fres"]
-        row = {}
-        for k in out_cols:
-            v = float(pred_input.get(k, np.nan))
-            unit = OUTPUT_UNITS.get(k, "")
-            row[f"{k} [{unit}]"] = v
-
+        row = {
+            "F1 [kN]": pred_input.get("F1", np.nan),
+            "K1 [kN/mm]": pred_input.get("K1", np.nan),
+            "F2 [kN]": pred_input.get("F2", np.nan),
+            "D2 [m]": D2_m,
+            "D2 [mm]": D2_mm,
+            "K23 [kN/mm]": pred_input.get("K23", np.nan),
+            "Fres [kN]": pred_input.get("Fres", np.nan),
+        }
         st.markdown("**Predicted parameters (Input case)**")
-        st.dataframe(pd.DataFrame([row]).round(4), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame([row]).round(6), use_container_width=True, hide_index=True)
 
-        # ------------------------------
-        # PLOT (SCENARIOS)
-        # ------------------------------
+        # ---- Plot scenarios ----
         scenarios = [
             ("Input", "blue", "-"),
             ("Bare frame", "black", "--"),
@@ -375,7 +342,7 @@ with right:
                 err_msgs.append(f"{name}: {err}")
                 continue
 
-            x_mm, y_kN = pts
+            x_mm, y_kN, _, _ = pts
             x2, y2 = extend_to_axis_end(list(x_mm), list(y_kN), axis_end)
             curves.append((name, color, ls, x2, y2))
 
@@ -383,7 +350,6 @@ with right:
             st.warning("Some scenarios could not be plotted:\n- " + "\n- ".join(err_msgs), icon="⚠️")
 
         st.subheader("F–D plot (scenarios)")
-
         fig, ax = plt.subplots(figsize=(2.6, 2.1), dpi=170)
 
         xs = np.linspace(0.0, axis_end, 450)
