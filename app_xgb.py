@@ -1,5 +1,6 @@
 import joblib
 import numpy as np
+import pandas as pd
 import streamlit as st
 from pathlib import Path
 
@@ -97,7 +98,6 @@ def load_artifacts(_version: str):
     Xsc = joblib.load(ART_DIR / "Xsc.pkl")
     Ysc = joblib.load(ART_DIR / "Ysc.pkl")
     models = joblib.load(ART_DIR / "xgb_models.joblib")
-    # best_params.joblib is optional; the app doesn't need it for prediction
     return meta, Xsc, Ysc, models
 
 
@@ -125,10 +125,8 @@ cfg = meta.get("cfg", {}) if isinstance(meta, dict) else {}
 log_X = bool(meta.get("log_transform_X", cfg.get("log_transform_X", True)))
 log_Y = bool(meta.get("log_transform_Y", cfg.get("log_transform_Y", True)))
 
-# Optional hint if you stored it in meta (not required)
-# If your new model outputs D2 already in meters (recommended), keep this as "m".
-# If you changed the model to output D2 in mm, set this to "mm" in meta or here.
-D2_UNIT = (meta.get("D2_unit", "m") if isinstance(meta, dict) else "m").lower()  # "m" or "mm"
+# Optional meta hint: "m" or "mm"
+D2_UNIT = (meta.get("D2_unit", "m") if isinstance(meta, dict) else "m").lower()
 
 
 # ============================================================
@@ -171,6 +169,14 @@ FEATURE_UI = {
     "rhoC": {"label": "Reinf. ratio (column)", "unit": "-"},
     "rhoB": {"label": "Reinf. ratio (beam)", "unit": "-"},
 }
+OUTPUT_UNITS = {
+    "F1": "kN",
+    "K1": "kN/m",
+    "F2": "kN",
+    "D2": "m" if D2_UNIT == "m" else "mm",
+    "K23": "kN/m",
+    "Fres": "kN",
+}
 
 
 def nice_label(key: str) -> str:
@@ -180,7 +186,7 @@ def nice_label(key: str) -> str:
     return f"{label} ({key}) [{unit}]" if unit else f"{label} ({key})"
 
 
-# Dropdown constraints (as you set earlier)
+# Dropdown constraints
 NS_OPTIONS = list(range(1, 13))
 BW_OPTIONS = [4000, 6000]
 BN_OPTIONS = list(range(1, 9))
@@ -191,18 +197,12 @@ IPGS_OPTIONS = list(range(1, 101))
 FCK_OPTIONS = [30, 40]
 
 
-# ============================================================
-# AXIS END RULE (fixed drift end)
-# ============================================================
 def target_end_mm_from_NS(ns: float) -> float:
     ns_i = int(round(float(ns)))
     fixed = {2: 150.0, 4: 300.0, 8: 600.0, 12: 900.0}
     return fixed.get(ns_i, 75.0 * float(ns_i))
 
 
-# ============================================================
-# SCENARIOS
-# ============================================================
 def scenario_row(base_row, kind: str):
     r = dict(base_row)
     infill_keys = ["FM", "TM", "IP", "IP_GS"]
@@ -232,11 +232,6 @@ def predict_one(row_dict):
 
 
 def curve_key_points_mm(pred):
-    """
-    D2 unit handling:
-      - If D2_UNIT == "m"  -> D2 is meters (recommended) -> convert to mm by *1000
-      - If D2_UNIT == "mm" -> D2 already mm -> keep as is
-    """
     F1 = float(pred["F1"])
     K1 = float(pred["K1"])
     F2 = float(pred["F2"])
@@ -247,10 +242,7 @@ def curve_key_points_mm(pred):
     if abs(K1) < 1e-12 or abs(K23) < 1e-12:
         return None, "K1 or K23 too close to zero."
 
-    # Displacements consistent with K in kN/m:
-    # D1 = F1/K1 (meters), D3 = D2 + (F2-Fres)/K23 (meters) if D2 is meters
     if D2_UNIT == "mm":
-        # If D2 is mm, convert to meters for the internal K-based displacement algebra
         D2_m = D2 / 1000.0
     else:
         D2_m = D2
@@ -258,7 +250,6 @@ def curve_key_points_mm(pred):
     D1_m = F1 / K1
     D3_m = D2_m + (F2 - Fres) / K23
 
-    # Convert to mm for plotting
     D1_mm = 1000.0 * D1_m
     D2_mm = 1000.0 * D2_m
     D3_mm = 1000.0 * D3_m
@@ -266,7 +257,9 @@ def curve_key_points_mm(pred):
     x = [0.0, D1_mm, D2_mm, D3_mm]
     y = [0.0, F1, F2, Fres]
     pts = sorted(zip(x, y), key=lambda t: t[0])
-    return ([p[0] for p in pts], [p[1] for p in pts]), None
+    x_mm = [p[0] for p in pts]
+    y_kN = [p[1] for p in pts]
+    return (x_mm, y_kN), None
 
 
 def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
@@ -275,7 +268,6 @@ def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
         x_mm = x_mm + [axis_end_mm]
         y_kN = y_kN + [last_y]
     else:
-        # clip any beyond axis_end
         pts = [(xx, yy) for xx, yy in zip(x_mm, y_kN) if xx <= axis_end_mm]
         if not pts:
             pts = [(0.0, 0.0)]
@@ -291,7 +283,7 @@ def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
 # PAGE
 # ============================================================
 st.title("Pushover Curve Predictor (XGB)")
-st.caption("This app uses updated artifacts. If you update artifacts again, change ARTIFACT_VERSION.")
+st.caption("Compact inputs on left. Outputs on right.")
 
 left, right = st.columns([0.38, 0.62], gap="small")
 
@@ -343,10 +335,27 @@ with right:
     if st.session_state["run_state"]:
         base_row = dict(st.session_state["inputs_dict"])
         ns_base = base_row.get("NS", 2.0)
-
-        # Desired axis end (mm)
         axis_end = target_end_mm_from_NS(ns_base)
 
+        # ------------------------------
+        # OUTPUT ROW FOR THE GIVEN INPUT
+        # ------------------------------
+        pred_input = predict_one(base_row)
+
+        # One-row display (no extra debug block)
+        out_cols = ["F1", "K1", "F2", "D2", "K23", "Fres"]
+        row = {}
+        for k in out_cols:
+            v = float(pred_input.get(k, np.nan))
+            unit = OUTPUT_UNITS.get(k, "")
+            row[f"{k} [{unit}]"] = v
+
+        st.markdown("**Predicted parameters (Input case)**")
+        st.dataframe(pd.DataFrame([row]).round(4), use_container_width=True, hide_index=True)
+
+        # ------------------------------
+        # PLOT (SCENARIOS)
+        # ------------------------------
         scenarios = [
             ("Input", "blue", "-"),
             ("Bare frame", "black", "--"),
