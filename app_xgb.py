@@ -73,21 +73,45 @@ D2_IS_METRES = True
 K_UNITS_ARE_KN_PER_MM = True
 
 # ============================================================
-# Artifact signature to force reload whenever artifacts change
-# (fixes "nothing changed" / old artifacts still loading)
+# Helpers (THIS FIXES YOUR NameError)
 # ============================================================
-ARTIFACT_FILES = ["meta.joblib", "Xsc.pkl", "Ysc.pkl", "xgb_models.joblib"]
+def pick_first_key(d, keys):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
+
+def safe_float_from_text(s: str, default: float = 0.0) -> float:
+    try:
+        if s is None:
+            return default
+        s = str(s).strip()
+        if s == "":
+            return default
+        return float(s)
+    except Exception:
+        return default
 
 def artifact_signature(files):
-    sig = []
+    """
+    Creates a signature based on file modified times + file sizes.
+    Any file replacement forces Streamlit to reload cached artifacts.
+    """
+    sig_parts = []
     for f in files:
         p = ART_DIR / f
         try:
-            sig.append(f"{f}:mtime={int(os.path.getmtime(p))}:size={os.path.getsize(p)}")
+            sig_parts.append(
+                f"{f}:mtime={int(os.path.getmtime(p))}:size={os.path.getsize(p)}"
+            )
         except Exception:
-            sig.append(f"{f}:missing")
-    return "|".join(sig)
+            sig_parts.append(f"{f}:missing")
+    return "|".join(sig_parts)
 
+# ============================================================
+# Load artifacts with auto-reload signature
+# ============================================================
+ARTIFACT_FILES = ["meta.joblib", "Xsc.pkl", "Ysc.pkl", "xgb_models.joblib"]
 ART_SIG = artifact_signature(ARTIFACT_FILES)
 
 @st.cache_resource
@@ -105,7 +129,7 @@ except Exception as e:
     st.stop()
 
 # ============================================================
-# Schema (your meta contains FEATURES/YVARS)
+# Schema + training flags
 # ============================================================
 FEATURES = meta.get("FEATURES", None)
 YVARS    = meta.get("YVARS", None)
@@ -120,7 +144,7 @@ log_X = bool(cfg.get("log_transform_X", True))
 log_Y = bool(cfg.get("log_transform_Y", True))
 
 # ============================================================
-# Preprocessing (must match training)
+# Preprocessing
 # ============================================================
 def fwd_X(df_or_np):
     X = df_or_np.values if hasattr(df_or_np, "values") else np.asarray(df_or_np)
@@ -205,8 +229,9 @@ def scenario_row(base_row, kind: str):
     return r
 
 # ============================================================
-# Curve construction (D2 from model is metres -> convert to mm)
-# K1/K23 treated as kN/mm (no scaling, per your request)
+# Curve construction
+# D2 from model is metres -> convert to mm for plotting
+# K1, K23 treated as kN/mm (labels corrected, values unchanged)
 # ============================================================
 def curve_key_points_mm(pred):
     F1 = float(pred["F1"])
@@ -215,16 +240,13 @@ def curve_key_points_mm(pred):
     K23 = float(pred["K23"])
     Fres = float(pred["Fres"])
 
-    # D2 in metres from model
     D2_m = float(pred["D2"]) if D2_IS_METRES else float(pred["D2"]) / 1000.0
     D2_mm = 1000.0 * D2_m
 
     if abs(K1) < 1e-12 or abs(K23) < 1e-12:
         return None, "K1 or K23 too close to zero."
 
-    # Since K1,K23 are treated as kN/mm, displacements come out in mm directly:
-    # D1_mm = F1/K1
-    # D3_mm = D2_mm + (F2 - Fres)/K23
+    # Treat K as kN/mm => displacements are in mm directly
     D1_mm = F1 / K1
     D3_mm = D2_mm + (F2 - Fres) / K23
 
@@ -233,7 +255,7 @@ def curve_key_points_mm(pred):
     pts = sorted(zip(x, y), key=lambda t: t[0])
     x_mm = [p[0] for p in pts]
     y_kN = [p[1] for p in pts]
-    return (x_mm, y_kN, D2_m, D2_mm), None
+    return (x_mm, y_kN), None
 
 def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
     last_y = float(y_kN[-1])
@@ -251,7 +273,7 @@ def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
 # PAGE
 # ============================================================
 st.title("Pushover Curve Predictor (XGB)")
-st.caption("Compact inputs on left. Outputs on right.")
+st.caption("App updated. Fixes NameError and ensures new artifacts reload automatically.")
 
 left, right = st.columns([0.38, 0.62], gap="small")
 
@@ -305,7 +327,6 @@ with right:
         ns_base = base_row.get("NS", 2.0)
         axis_end = axis_end_mm_from_NS(ns_base)
 
-        # ---- One-row output for INPUT case (so you can verify D2) ----
         pred_input = predict_one(base_row)
         D2_m = float(pred_input["D2"])
         D2_mm = 1000.0 * D2_m
@@ -322,7 +343,6 @@ with right:
         st.markdown("**Predicted parameters (Input case)**")
         st.dataframe(pd.DataFrame([row]).round(6), use_container_width=True, hide_index=True)
 
-        # ---- Plot scenarios ----
         scenarios = [
             ("Input", "blue", "-"),
             ("Bare frame", "black", "--"),
@@ -342,7 +362,7 @@ with right:
                 err_msgs.append(f"{name}: {err}")
                 continue
 
-            x_mm, y_kN, _, _ = pts
+            x_mm, y_kN = pts
             x2, y2 = extend_to_axis_end(list(x_mm), list(y_kN), axis_end)
             curves.append((name, color, ls, x2, y2))
 
