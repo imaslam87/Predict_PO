@@ -6,81 +6,196 @@ import streamlit as st
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 from io import BytesIO
 
 # ============================================================
-# GLOBAL FONT SETTINGS
+# FONT CONTROL PANEL (EDIT THESE)
 # ============================================================
-APP_FONT_FAMILY = "Times New Roman"
-UI_FONT_SIZE_PX = 15
-PLOT_FONT_SIZE_PT = 11
-PLOT_TICK_FONT = 8
-PLOT_LEGEND_FONT = 8
+FONT_FAMILY = "Times New Roman"
+
+TITLE_FONT_PX          = 22   # main title text
+CAPTION_FONT_PX        = 14   # "Compact inputs..." line
+SECTION_HEADER_PX      = 16   # "Inputs" / "Outputs" / "F–D plot (scenarios)"
+
+INPUT_LABEL_FONT_PX    = 14   # captions like "Bay width (bw) [mm]"
+INPUT_WIDGET_FONT_PX   = 14   # dropdown selected value + dropdown list + text boxes
+
+BUTTON_FONT_PX         = 14   # Predict + Download buttons
+
+# Plot fonts (matplotlib)
+PLOT_AXIS_LABEL_PT     = 10   # x/y label font
+PLOT_TICK_FONT_PT      = 10   # tick labels
+PLOT_LEGEND_FONT_PT    = 8   # legend text
 
 # ============================================================
-# COMPACT CSS (inputs)
+# MODEL/UNITS
 # ============================================================
-st.markdown(
-    f"""
-    <style>
-    html, body, [class*="css"] {{
-        font-family: "{APP_FONT_FAMILY}", Times, serif !important;
-        font-size: {UI_FONT_SIZE_PX}px !important;
-    }}
-    div[data-baseweb="select"] > div {{
-        min-height: 30px !important;
-        padding: 0px 6px !important;
-        border-radius: 6px !important;
-        max-width: 190px !important;
-    }}
-    div[data-testid="stTextInput"] input {{
-        min-height: 30px !important;
-        padding: 0px 6px !important;
-        border-radius: 6px !important;
-        max-width: 190px !important;
-    }}
-    div[data-testid="stSelectbox"], div[data-testid="stTextInput"] {{
-        max-width: 195px !important;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Based on your current correct setup: model outputs D2 in mm
+D2_MODEL_IS_MM = True
+K_LABEL = "kN/mm"  # labels only (no numeric scaling)
 
-plt.rcParams.update(
-    {
-        "font.family": APP_FONT_FAMILY,
-        "font.size": PLOT_FONT_SIZE_PT,
-        "axes.labelsize": PLOT_FONT_SIZE_PT,
-        "xtick.labelsize": PLOT_TICK_FONT,
-        "ytick.labelsize": PLOT_TICK_FONT,
-        "legend.fontsize": PLOT_LEGEND_FONT,
-    }
-)
-
+# ============================================================
+# PAGE SETUP
+# ============================================================
 st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layout="wide")
 ART_DIR = Path(__file__).resolve().parent
 
 # ============================================================
-# IMPORTANT MODEL/UNIT ASSUMPTIONS (per your retraining)
+# INPUT LABEL DEFINITIONS (HTML)
 # ============================================================
-# Your updated model predicts D2 in METRES (because you trained with D2/1000 -> metres)
-D2_IS_METRES = True
+FEATURE_UI = {
+    "NS": {"label": "Number of stories", "symbol_html": "<i>NS</i>"},
+    "BW": {"label": "Bay width", "symbol_html": "<i>b</i><sub>w</sub>", "unit_html": "mm"},
+    "BN": {"label": "Number of bays", "symbol_html": "<i>BN</i>", "unit_html": "count"},
+    "FM": {"label": "Infill strength", "symbol_html": "<i>f</i><sup>&prime;</sup><sub>m</sub>", "unit_html": "MPa"},
+    "TM": {"label": "Infill thickness", "symbol_html": "<i>t</i><sub>m</sub>", "unit_html": "mm"},
+    "IP": {"label": "Infill percentage", "symbol_html": "<i>IP</i>", "unit_html": "%"},
+    "IP_GS": {"label": "Infill % at ground storey", "symbol_html": "<i>IP</i><sub>GS</sub>", "unit_html": "%"},
+    "FCK": {"label": "Concrete strength", "symbol_html": "<i>f</i><sub>ck</sub>", "unit_html": "MPa"},
+    "AC": {"label": "Area of column", "symbol_html": "<i>A</i><sub>c</sub>", "unit_html": "mm<sup>2</sup>"},
+    "AB": {"label": "Area of beam", "symbol_html": "<i>A</i><sub>b</sub>", "unit_html": "mm<sup>2</sup>"},
+    "rhoC": {"label": "Reinf. ratio (column)", "symbol_html": "&rho;<sub>c</sub>", "unit_html": "-"},
+    "rhoB": {"label": "Reinf. ratio (beam)", "symbol_html": "&rho;<sub>b</sub>", "unit_html": "-"},
+}
 
-# You asked to correct units of K1 and K23 to kN/mm WITHOUT changing values.
-# So for curve construction we treat K1,K23 numerically as kN/mm.
-K_UNITS_ARE_KN_PER_MM = True
+# CSV headers (ONLY D2 in mm)
+OUTPUT_HEADER_TXT = {
+    "Scenario": "Scenario",
+    "F1": "F1 (kN)",
+    "K1": f"K1 ({K_LABEL})",
+    "F2": "F2 (kN)",
+    "D2_mm": "D2 (mm)",
+    "K23": f"K23 ({K_LABEL})",
+    "Fres": "Fres (kN)",
+    "EndDisp_mm": "Disp_end (mm)",
+}
 
 # ============================================================
-# Helpers (THIS FIXES YOUR NameError)
+# CSS (FORCE TIMES + SIZE CONTROL FOR EVERY UI ELEMENT)
 # ============================================================
-def pick_first_key(d, keys):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return None
+st.markdown(
+f"""
+<style>
+/* Global font */
+html, body, [class*="css"], [data-testid="stAppViewContainer"] {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+}}
 
+/* Force Times New Roman for Streamlit headings/subheaders too */
+div[data-testid="stAppViewContainer"] h1,
+div[data-testid="stAppViewContainer"] h2,
+div[data-testid="stAppViewContainer"] h3,
+div[data-testid="stAppViewContainer"] h4,
+div[data-testid="stAppViewContainer"] h5,
+div[data-testid="stAppViewContainer"] h6,
+div[data-testid="stAppViewContainer"] h1 *,
+div[data-testid="stAppViewContainer"] h2 *,
+div[data-testid="stAppViewContainer"] h3 *,
+div[data-testid="stAppViewContainer"] h4 *,
+div[data-testid="stAppViewContainer"] h5 *,
+div[data-testid="stAppViewContainer"] h6 * {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  color: #000000 !important;
+}}
+
+/* Custom title */
+.app-title {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  font-size: {TITLE_FONT_PX}px !important;
+  font-weight: 800 !important;
+  margin-bottom: 6px !important;
+  color: #000000 !important;
+  line-height: 1.15 !important;
+}}
+
+/* Caption */
+.app-caption {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  font-size: {CAPTION_FONT_PX}px !important;
+  color: #000000 !important;
+  opacity: 0.85;
+  margin-bottom: 16px;
+}}
+
+/* Our own section headings */
+.sec-h {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  font-size: {SECTION_HEADER_PX}px !important;
+  font-weight: 700 !important;
+  margin: 6px 0 10px 0 !important;
+  color: #000000 !important;
+  line-height: 1.15 !important;
+}}
+
+/* Input caption labels */
+.input-label {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  font-size: {INPUT_LABEL_FONT_PX}px !important;
+  color: #000000 !important;
+  margin-bottom: 0.12rem !important;
+}}
+
+/* Selectbox visible + internal */
+div[data-testid="stSelectbox"] * {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  color: #000000 !important;
+  font-size: {INPUT_WIDGET_FONT_PX}px !important;
+}}
+
+/* Dropdown menu items */
+div[data-baseweb="popover"] * {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  color: #000000 !important;
+  font-size: {INPUT_WIDGET_FONT_PX}px !important;
+}}
+
+/* Text input */
+div[data-testid="stTextInput"] input {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  color: #000000 !important;
+  font-size: {INPUT_WIDGET_FONT_PX}px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}}
+
+/* Buttons (Predict + Download) */
+button, button * {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  color: #000000 !important;
+  font-size: {BUTTON_FONT_PX}px !important;
+}}
+
+/* If download renders as a link */
+a, a * {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  color: #000000 !important;
+  font-size: {BUTTON_FONT_PX}px !important;
+}}
+
+/* Compact widget width */
+div[data-testid="stSelectbox"], div[data-testid="stTextInput"] {{
+  max-width: 170px !important;
+}}
+</style>
+""",
+unsafe_allow_html=True
+)
+
+# ============================================================
+# Matplotlib font controls (plot)
+# ============================================================
+plt.rcParams.update({
+    "font.family": FONT_FAMILY,
+    "font.size": PLOT_AXIS_LABEL_PT,
+    "axes.labelsize": PLOT_AXIS_LABEL_PT,
+    "xtick.labelsize": PLOT_TICK_FONT_PT,
+    "ytick.labelsize": PLOT_TICK_FONT_PT,
+    "legend.fontsize": PLOT_LEGEND_FONT_PT,
+})
+
+# ============================================================
+# Helpers
+# ============================================================
 def safe_float_from_text(s: str, default: float = 0.0) -> float:
     try:
         if s is None:
@@ -92,24 +207,72 @@ def safe_float_from_text(s: str, default: float = 0.0) -> float:
     except Exception:
         return default
 
+
 def artifact_signature(files):
-    """
-    Creates a signature based on file modified times + file sizes.
-    Any file replacement forces Streamlit to reload cached artifacts.
-    """
     sig_parts = []
     for f in files:
         p = ART_DIR / f
         try:
-            sig_parts.append(
-                f"{f}:mtime={int(os.path.getmtime(p))}:size={os.path.getsize(p)}"
-            )
+            sig_parts.append(f"{f}:mtime={int(os.path.getmtime(p))}:size={os.path.getsize(p)}")
         except Exception:
             sig_parts.append(f"{f}:missing")
     return "|".join(sig_parts)
 
+
+def axis_end_mm_from_NS(ns: float) -> float:
+    ns_i = int(round(float(ns)))
+    fixed = {2: 150.0, 4: 300.0, 8: 600.0, 12: 900.0}
+    return fixed.get(ns_i, 75.0 * float(ns_i))
+
+
+def nice_input_label_html(key: str) -> str:
+    ui = FEATURE_UI.get(key, {})
+    label = ui.get("label", key)
+    sym = ui.get("symbol_html", key)
+    unit = ui.get("unit_html", "")
+    if unit:
+        return f'<div class="input-label">{label} ({sym}) [{unit}]</div>'
+    return f'<div class="input-label">{label} ({sym})</div>'
+
+
+def scenario_row(base_row, kind: str):
+    r = dict(base_row)
+    infill_keys = ["FM", "TM", "IP", "IP_GS"]
+    if kind == "Input":
+        return r
+    if kind == "Bare frame":
+        for k in infill_keys:
+            r[k] = 0.0
+        return r
+    if kind == "Fully Infilled":
+        r["IP"] = 100.0
+        r["IP_GS"] = 100.0
+        return r
+    if kind == "Soft story":
+        r["IP_GS"] = 0.0
+        return r
+    return r
+
+
+def make_integer_ticks_include_end(x_end: float, n: int = 7):
+    if x_end <= 0:
+        return [0]
+    raw = np.linspace(0, x_end, n)
+    ticks = np.unique(np.round(raw).astype(int))
+    if ticks[-1] != int(round(x_end)):
+        ticks = np.append(ticks, int(round(x_end)))
+    ticks = np.unique(ticks)
+    return ticks.tolist()
+
+
+def ceil_to_nice_int(v: float, step: int = 50) -> int:
+    if v <= 0:
+        return step
+    return int(np.ceil(v / step) * step)
+
+
 # ============================================================
-# Load artifacts with auto-reload signature
+# Load artifacts
 # ============================================================
 ARTIFACT_FILES = ["meta.joblib", "Xsc.pkl", "Ysc.pkl", "xgb_models.joblib"]
 ART_SIG = artifact_signature(ARTIFACT_FILES)
@@ -122,29 +285,18 @@ def load_artifacts(_sig: str):
     models = joblib.load(ART_DIR / "xgb_models.joblib")
     return meta, Xsc, Ysc, models
 
-try:
-    meta, Xsc, Ysc, models = load_artifacts(ART_SIG)
-except Exception as e:
-    st.error(f"Artifact load failed: {e}")
-    st.stop()
+meta, Xsc, Ysc, models = load_artifacts(ART_SIG)
 
-# ============================================================
-# Schema + training flags
-# ============================================================
-FEATURES = meta.get("FEATURES", None)
-YVARS    = meta.get("YVARS", None)
-cfg      = meta.get("cfg", {}) if isinstance(meta, dict) else {}
-
-if FEATURES is None or YVARS is None:
-    st.error("meta.joblib does not contain FEATURES and YVARS.")
-    st.write("Meta keys:", list(meta.keys()) if isinstance(meta, dict) else type(meta))
-    st.stop()
+FEATURES = meta.get("FEATURES")
+YVARS = meta.get("YVARS")
+cfg = meta.get("cfg", {})
 
 log_X = bool(cfg.get("log_transform_X", True))
 log_Y = bool(cfg.get("log_transform_Y", True))
 
+
 # ============================================================
-# Preprocessing
+# Preprocessing + prediction
 # ============================================================
 def fwd_X(df_or_np):
     X = df_or_np.values if hasattr(df_or_np, "values") else np.asarray(df_or_np)
@@ -170,92 +322,28 @@ def predict_one(row_dict):
     Yo1 = inv_Y(Yz1)[0]
     return {YVARS[i]: float(Yo1[i]) for i in range(len(YVARS))}
 
-# ============================================================
-# UI labels
-# ============================================================
-FEATURE_UI = {
-    "NS": {"label": "Number of stories", "unit": "stories"},
-    "BW": {"label": "Bay width", "unit": "mm"},
-    "BN": {"label": "Number of bays", "unit": "count"},
-    "FM": {"label": "Infill strength", "unit": "MPa"},
-    "TM": {"label": "Infill thickness", "unit": "mm"},
-    "IP": {"label": "Infill percentage", "unit": "%"},
-    "IP_GS": {"label": "Infill % at ground storey", "unit": "%"},
-    "FCK": {"label": "Concrete strength (fck)", "unit": "MPa"},
-    "AC": {"label": "Area of column", "unit": "mm^2"},
-    "AB": {"label": "Area of beam", "unit": "mm^2"},
-    "rhoC": {"label": "Reinf. ratio (column)", "unit": "-"},
-    "rhoB": {"label": "Reinf. ratio (beam)", "unit": "-"},
-}
-
-def nice_label(key: str) -> str:
-    ui = FEATURE_UI.get(key, {})
-    label = ui.get("label", key)
-    unit = (ui.get("unit", "") or "").strip()
-    return f"{label} ({key}) [{unit}]" if unit else f"{label} ({key})"
-
-# Dropdown constraints
-NS_OPTIONS = list(range(1, 13))
-BW_OPTIONS = [4000, 6000]
-BN_OPTIONS = list(range(1, 9))
-FM_OPTIONS = [3, 6, 9, 15]
-TM_OPTIONS = [115, 230]
-IP_OPTIONS = list(range(1, 101))
-IPGS_OPTIONS = list(range(1, 101))
-FCK_OPTIONS = [30, 40]
-
-def axis_end_mm_from_NS(ns: float) -> float:
-    ns_i = int(round(float(ns)))
-    fixed = {2: 150.0, 4: 300.0, 8: 600.0, 12: 900.0}
-    return fixed.get(ns_i, 75.0 * float(ns_i))
-
-def scenario_row(base_row, kind: str):
-    r = dict(base_row)
-    infill_keys = ["FM", "TM", "IP", "IP_GS"]
-    if kind == "Input":
-        return r
-    if kind == "Bare frame":
-        for k in infill_keys:
-            if k in r:
-                r[k] = 0.0
-        return r
-    if kind == "Fully Infilled":
-        r["IP"] = 100.0
-        r["IP_GS"] = 100.0
-        return r
-    if kind == "Soft story":
-        r["IP_GS"] = 0.0
-        return r
-    return r
 
 # ============================================================
-# Curve construction
-# D2 from model is metres -> convert to mm for plotting
-# K1, K23 treated as kN/mm (labels corrected, values unchanged)
+# Curve construction (plotted in mm)
 # ============================================================
 def curve_key_points_mm(pred):
     F1 = float(pred["F1"])
     K1 = float(pred["K1"])
     F2 = float(pred["F2"])
+    D2_mm = float(pred["D2"]) if D2_MODEL_IS_MM else float(pred["D2"]) * 1000.0
     K23 = float(pred["K23"])
     Fres = float(pred["Fres"])
-
-    D2_m = float(pred["D2"]) if D2_IS_METRES else float(pred["D2"]) / 1000.0
-    D2_mm = 1000.0 * D2_m
 
     if abs(K1) < 1e-12 or abs(K23) < 1e-12:
         return None, "K1 or K23 too close to zero."
 
-    # Treat K as kN/mm => displacements are in mm directly
     D1_mm = F1 / K1
     D3_mm = D2_mm + (F2 - Fres) / K23
 
     x = [0.0, D1_mm, D2_mm, D3_mm]
     y = [0.0, F1, F2, Fres]
     pts = sorted(zip(x, y), key=lambda t: t[0])
-    x_mm = [p[0] for p in pts]
-    y_kN = [p[1] for p in pts]
-    return (x_mm, y_kN), None
+    return [p[0] for p in pts], [p[1] for p in pts]
 
 def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
     last_y = float(y_kN[-1])
@@ -269,53 +357,67 @@ def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
         y2.append(last_y)
     return x2, y2
 
+
 # ============================================================
 # PAGE
 # ============================================================
-st.title("Pushover Curve Predictor (XGB)")
-st.caption("App updated. Fixes NameError and ensures new artifacts reload automatically.")
+st.markdown(
+    "<div class='app-title'>Pushover Curve predictor for multi-story masonry infilled reinforced concrete frames (XGB)</div>",
+    unsafe_allow_html=True,
+)
+#st.markdown('<div class="app-caption">inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
 
-left, right = st.columns([0.38, 0.62], gap="small")
+left, right = st.columns([0.45, 0.55], gap="small")
 
 if "inputs_dict" not in st.session_state:
     st.session_state["inputs_dict"] = {}
 
+# Dropdown options
+NS_OPTIONS = list(range(1, 13))
+BW_OPTIONS = [4000, 6000]
+BN_OPTIONS = list(range(1, 9))
+FM_OPTIONS = [3, 6, 9, 15]
+TM_OPTIONS = [115, 230]
+IP_OPTIONS = list(range(1, 101))
+IPGS_OPTIONS = list(range(1, 101))
+FCK_OPTIONS = [30, 40]
+
 with left:
-    st.subheader("Inputs")
-    pad_l, form_col, pad_r = st.columns([0.10, 0.80, 0.10])
+    st.markdown("<div class='sec-h'>Inputs</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2, gap="small")
 
-    with form_col:
-        inputs = {}
-        for name in FEATURES:
-            label = nice_label(name)
+    inputs = {}
+    for i, name in enumerate(FEATURES):
+        col = c1 if i % 2 == 0 else c2
+        with col:
+            st.markdown(nice_input_label_html(name), unsafe_allow_html=True)
+            wkey = f"in_{name}"
+
             if name == "NS":
-                inputs[name] = float(st.selectbox(label, NS_OPTIONS, index=1 if 2 in NS_OPTIONS else 0))
+                inputs[name] = float(st.selectbox(" ", NS_OPTIONS, index=1, label_visibility="collapsed", key=wkey))
             elif name == "BW":
-                inputs[name] = float(st.selectbox(label, BW_OPTIONS, index=0))
+                inputs[name] = float(st.selectbox(" ", BW_OPTIONS, index=0, label_visibility="collapsed", key=wkey))
             elif name == "BN":
-                inputs[name] = float(st.selectbox(label, BN_OPTIONS, index=0))
+                inputs[name] = float(st.selectbox(" ", BN_OPTIONS, index=3, label_visibility="collapsed", key=wkey))
             elif name == "FM":
-                inputs[name] = float(st.selectbox(label, FM_OPTIONS, index=0))
+                inputs[name] = float(st.selectbox(" ", FM_OPTIONS, index=0, label_visibility="collapsed", key=wkey))
             elif name == "TM":
-                inputs[name] = float(st.selectbox(label, TM_OPTIONS, index=0))
+                inputs[name] = float(st.selectbox(" ", TM_OPTIONS, index=1, label_visibility="collapsed", key=wkey))
             elif name == "IP":
-                inputs[name] = float(st.selectbox(label, IP_OPTIONS, index=49))
+                inputs[name] = float(st.selectbox(" ", IP_OPTIONS, index=24, label_visibility="collapsed", key=wkey))
             elif name == "IP_GS":
-                inputs[name] = float(st.selectbox(label, IPGS_OPTIONS, index=49))
+                inputs[name] = float(st.selectbox(" ", IPGS_OPTIONS, index=24, label_visibility="collapsed", key=wkey))
             elif name == "FCK":
-                inputs[name] = float(st.selectbox(label, FCK_OPTIONS, index=0))
-            elif name in ["AC", "AB", "rhoC", "rhoB"]:
-                txt = st.text_input(label, value="0.00")
-                inputs[name] = safe_float_from_text(txt, default=0.0)
+                inputs[name] = float(st.selectbox(" ", FCK_OPTIONS, index=0, label_visibility="collapsed", key=wkey))
             else:
-                txt = st.text_input(label, value="0.00")
+                txt = st.text_input(" ", value="0.00", label_visibility="collapsed", key=wkey)
                 inputs[name] = safe_float_from_text(txt, default=0.0)
 
-        st.session_state["inputs_dict"] = inputs
+    st.session_state["inputs_dict"] = inputs
 
 with right:
-    st.subheader("Outputs")
-    run = st.button("Predict pushover curve parameters")
+    st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
+    run = st.button("Predict pushover curve parameters", key="run_btn")
 
     if "run_state" not in st.session_state:
         st.session_state["run_state"] = False
@@ -327,22 +429,6 @@ with right:
         ns_base = base_row.get("NS", 2.0)
         axis_end = axis_end_mm_from_NS(ns_base)
 
-        pred_input = predict_one(base_row)
-        D2_m = float(pred_input["D2"])
-        D2_mm = 1000.0 * D2_m
-
-        row = {
-            "F1 [kN]": pred_input.get("F1", np.nan),
-            "K1 [kN/mm]": pred_input.get("K1", np.nan),
-            "F2 [kN]": pred_input.get("F2", np.nan),
-            "D2 [m]": D2_m,
-            "D2 [mm]": D2_mm,
-            "K23 [kN/mm]": pred_input.get("K23", np.nan),
-            "Fres [kN]": pred_input.get("Fres", np.nan),
-        }
-        st.markdown("**Predicted parameters (Input case)**")
-        st.dataframe(pd.DataFrame([row]).round(6), use_container_width=True, hide_index=True)
-
         scenarios = [
             ("Input", "blue", "-"),
             ("Bare frame", "black", "--"),
@@ -351,68 +437,83 @@ with right:
         ]
 
         curves = []
-        err_msgs = []
+        scenario_rows = []
 
-        for name, color, ls in scenarios:
-            row_dict = scenario_row(base_row, name)
+        for sc_name, color, ls in scenarios:
+            row_dict = scenario_row(base_row, sc_name)
             pred = predict_one(row_dict)
 
-            pts, err = curve_key_points_mm(pred)
-            if err:
-                err_msgs.append(f"{name}: {err}")
-                continue
+            d2_mm = float(pred["D2"]) if D2_MODEL_IS_MM else float(pred["D2"]) * 1000.0
 
-            x_mm, y_kN = pts
-            x2, y2 = extend_to_axis_end(list(x_mm), list(y_kN), axis_end)
-            curves.append((name, color, ls, x2, y2))
+            scenario_rows.append({
+                OUTPUT_HEADER_TXT["Scenario"]: sc_name,
+                OUTPUT_HEADER_TXT["F1"]: float(pred["F1"]),
+                OUTPUT_HEADER_TXT["K1"]: float(pred["K1"]),
+                OUTPUT_HEADER_TXT["F2"]: float(pred["F2"]),
+                OUTPUT_HEADER_TXT["D2_mm"]: d2_mm,
+                OUTPUT_HEADER_TXT["K23"]: float(pred["K23"]),
+                OUTPUT_HEADER_TXT["Fres"]: float(pred["Fres"]),
+                OUTPUT_HEADER_TXT["EndDisp_mm"]: axis_end,
+            })
 
-        if err_msgs:
-            st.warning("Some scenarios could not be plotted:\n- " + "\n- ".join(err_msgs), icon="⚠️")
+            x_mm, y_kN = curve_key_points_mm(pred)
+            x2, y2 = extend_to_axis_end(x_mm, y_kN, axis_end)
+            curves.append((sc_name, color, ls, x2, y2))
 
-        st.subheader("F–D plot (scenarios)")
-        fig, ax = plt.subplots(figsize=(2.6, 2.1), dpi=170)
+        st.markdown("<div class='sec-h'>F–D plot (scenarios)</div>", unsafe_allow_html=True)
+
+        fig, ax = plt.subplots(figsize=(3.0, 2.5), dpi=170)
 
         xs = np.linspace(0.0, axis_end, 450)
         for name, color, ls, x_mm, y_kN in curves:
             ys = np.interp(xs, x_mm, y_kN)
-            ax.plot(xs, ys, linewidth=0.9, color=color, linestyle=ls, label=name)
+            ax.plot(xs, ys, linewidth=1.0, color=color, linestyle=ls, label=name)
 
-        ax.set_xlabel("Displacement (mm)")
-        ax.set_ylabel("Base Shear (kN)")
+        ax.set_xlabel("Displacement (mm)", fontname=FONT_FAMILY, fontsize=PLOT_AXIS_LABEL_PT)
+        ax.set_ylabel("Base Shear (kN)", fontname=FONT_FAMILY, fontsize=PLOT_AXIS_LABEL_PT)
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.0, axis_end)
 
-        if curves:
-            all_y = np.concatenate([np.array(c[4], dtype=float) for c in curves])
-            y_max = float(np.max(all_y)) * 1.05 if float(np.max(all_y)) > 0 else 1.0
-        else:
-            y_max = 1.0
-        ax.set_ylim(0.0, y_max)
+        all_y = np.concatenate([np.array(c[4], dtype=float) for c in curves]) if curves else np.array([1.0])
+        y_max = float(np.max(all_y)) * 1.05
+        y_max_int = ceil_to_nice_int(y_max, step=50)
+        ax.set_ylim(0.0, y_max_int)
 
-        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
-        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, integer=True))
-        ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
-        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+        xticks = make_integer_ticks_include_end(axis_end, n=7)
+        yticks = make_integer_ticks_include_end(y_max_int, n=6)
+        ax.set_xticks(xticks)
+        ax.set_yticks(yticks)
 
-        ax.tick_params(axis="both", labelsize=PLOT_TICK_FONT)
-        ax.legend(
-            loc="upper right",
-            frameon=False,
-            handlelength=1.2,
-            handletextpad=0.6,
-            borderaxespad=0.3,
-            fontsize=PLOT_LEGEND_FONT,
-        )
+        ax.tick_params(axis="both", labelsize=PLOT_TICK_FONT_PT)
+        for t in ax.get_xticklabels() + ax.get_yticklabels():
+            t.set_fontname(FONT_FAMILY)
+            t.set_fontsize(PLOT_TICK_FONT_PT)
 
-        fig.tight_layout(pad=0.5)
+        leg = ax.legend(loc="upper right", bbox_to_anchor=(1.04, 1.04), frameon=False, fontsize=PLOT_LEGEND_FONT_PT)
+        for txt in leg.get_texts():
+            txt.set_fontname(FONT_FAMILY)
+
+        fig.tight_layout(pad=0.6)
         st.pyplot(fig, clear_figure=True, use_container_width=False)
 
-        buf = BytesIO()
-        fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-        buf.seek(0)
+        png_buf = BytesIO()
+        fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
+        png_buf.seek(0)
+
+        df_out = pd.DataFrame(scenario_rows)
+
         st.download_button(
             "Download F–D plot (PNG)",
-            data=buf,
-            file_name="pushover_curve_fd_scenarios.png",
+            data=png_buf,
+            file_name="pushover_fd_plot_scenarios.png",
             mime="image/png",
+            key="dl_png",
+        )
+
+        st.download_button(
+            "Download scenario predictions (CSV)",
+            data=df_out.to_csv(index=False),
+            file_name="scenario_predictions.csv",
+            mime="text/csv",
+            key="dl_csv",
         )
