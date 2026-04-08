@@ -8,6 +8,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from io import BytesIO
 
+import matplotlib as mpl
+from matplotlib import font_manager
+
 # ============================================================
 # FONT CONTROL PANEL (EDIT THESE)
 # ============================================================
@@ -26,6 +29,15 @@ BUTTON_FONT_PX         = 14   # Predict + Download buttons
 PLOT_AXIS_LABEL_PT     = 10   # x/y label font
 PLOT_TICK_FONT_PT      = 10   # tick labels
 PLOT_LEGEND_FONT_PT    = 8   # legend text
+
+# Prefer Times New Roman locally; fall back to Liberation Serif (available on Linux/Streamlit Cloud)
+mpl.rcParams["font.family"] = "serif"
+mpl.rcParams["font.serif"] = ["Times New Roman", "Liberation Serif", "DejaVu Serif"]
+
+mpl.rcParams["axes.labelsize"] = PLOT_AXIS_LABEL_PT
+mpl.rcParams["xtick.labelsize"] = PLOT_TICK_FONT_PT
+mpl.rcParams["ytick.labelsize"] = PLOT_TICK_FONT_PT
+mpl.rcParams["legend.fontsize"] = PLOT_LEGEND_FONT_PT
 
 # ============================================================
 # MODEL/UNITS
@@ -469,10 +481,14 @@ with right:
             ys = np.interp(xs, x_mm, y_kN)
             ax.plot(xs, ys, linewidth=1.0, color=color, linestyle=ls, label=name)
 
-        ax.set_xlabel("Displacement (mm)", fontname=FONT_FAMILY, fontsize=PLOT_AXIS_LABEL_PT)
-        ax.set_ylabel("Base Shear (kN)", fontname=FONT_FAMILY, fontsize=PLOT_AXIS_LABEL_PT)
+        ax.set_xlabel("Displacement (mm)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
+        ax.set_ylabel("Base Shear (kN)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.0, axis_end)
+ 
+#        ax.set_xlabel("Displacement (mm)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
+#        ax.set_ylabel("Base Shear (kN)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT) 
+        
 
         all_y = np.concatenate([np.array(c[4], dtype=float) for c in curves]) if curves else np.array([1.0])
         y_max = float(np.max(all_y)) * 1.05
@@ -486,12 +502,12 @@ with right:
 
         ax.tick_params(axis="both", labelsize=PLOT_TICK_FONT_PT)
         for t in ax.get_xticklabels() + ax.get_yticklabels():
-            t.set_fontname(FONT_FAMILY)
+            t.set_fontname("serif")
             t.set_fontsize(PLOT_TICK_FONT_PT)
 
         leg = ax.legend(loc="upper right", bbox_to_anchor=(1.04, 1.04), frameon=False, fontsize=PLOT_LEGEND_FONT_PT)
         for txt in leg.get_texts():
-            txt.set_fontname(FONT_FAMILY)
+            txt.set_fontname("serif")
 
         fig.tight_layout(pad=0.6)
         st.pyplot(fig, clear_figure=True, use_container_width=False)
