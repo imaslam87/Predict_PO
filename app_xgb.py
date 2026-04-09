@@ -46,25 +46,46 @@ st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layo
 ART_DIR = Path(__file__).resolve().parent
 
 # ============================================================
-# OPTIONAL: EXACT TIMES NEW ROMAN FOR PLOT ON STREAMLIT CLOUD
-# Put the font file here:
-#   assets/fonts/TimesNewRoman.ttf
+# FORCE EXACT TIMES NEW ROMAN FOR MATPLOTLIB USING YOUR FONT FILES
+# Put these in repo:
+#   assets/fonts/times.ttf
+#   assets/fonts/timesbd.ttf
+#   assets/fonts/timesi.ttf
+#   assets/fonts/timesbi.ttf
 # ============================================================
-def force_times_new_roman_if_available():
-    font_path = ART_DIR / "assets" / "fonts" / "TimesNewRoman.ttf"
-    if font_path.exists():
-        font_manager.fontManager.addfont(str(font_path))
-        mpl.rcParams["font.family"] = "Times New Roman"
-        mpl.rcParams["font.serif"] = ["Times New Roman"]
-        return True
-    else:
-        # fallback: still a serif but not exact Times New Roman
+def force_times_from_repo():
+    font_dir = ART_DIR / "assets" / "fonts"
+    candidates = [
+        font_dir / "times.ttf",    # regular
+        font_dir / "timesbd.ttf",  # bold
+        font_dir / "timesi.ttf",   # italic
+        font_dir / "timesbi.ttf",  # bold italic
+    ]
+
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
+        # fallback if fonts not present
         mpl.rcParams["font.family"] = "serif"
         mpl.rcParams["font.serif"] = ["Liberation Serif", "DejaVu Serif"]
-        return False
+        return "serif"
 
-HAS_TNR = force_times_new_roman_if_available()
+    # Register all available fonts
+    for fp in existing:
+        font_manager.fontManager.addfont(str(fp))
 
+    # Get the *actual registered name* from the regular file
+    # This is crucial on Streamlit Cloud/Linux.
+    base_fp = existing[0]
+    font_name = font_manager.FontProperties(fname=str(base_fp)).get_name()
+
+    mpl.rcParams["font.family"] = font_name
+    mpl.rcParams["font.serif"] = [font_name]
+
+    return font_name
+
+PLOT_FONT_NAME = force_times_from_repo()
+
+# Apply plot sizes
 mpl.rcParams["axes.labelsize"] = PLOT_AXIS_LABEL_PT
 mpl.rcParams["xtick.labelsize"] = PLOT_TICK_FONT_PT
 mpl.rcParams["ytick.labelsize"] = PLOT_TICK_FONT_PT
@@ -213,7 +234,6 @@ def safe_float_from_text(s: str, default: float = 0.0) -> float:
     except Exception:
         return default
 
-
 def artifact_signature(files):
     sig_parts = []
     for f in files:
@@ -224,12 +244,10 @@ def artifact_signature(files):
             sig_parts.append(f"{f}:missing")
     return "|".join(sig_parts)
 
-
 def axis_end_mm_from_NS(ns: float) -> float:
     ns_i = int(round(float(ns)))
     fixed = {2: 150.0, 4: 300.0, 8: 600.0, 12: 900.0}
     return fixed.get(ns_i, 75.0 * float(ns_i))
-
 
 def nice_input_label_html(key: str) -> str:
     ui = FEATURE_UI.get(key, {})
@@ -239,7 +257,6 @@ def nice_input_label_html(key: str) -> str:
     if unit:
         return f'<div class="input-label">{label} ({sym}) [{unit}]</div>'
     return f'<div class="input-label">{label} ({sym})</div>'
-
 
 def scenario_row(base_row, kind: str):
     r = dict(base_row)
@@ -259,7 +276,6 @@ def scenario_row(base_row, kind: str):
         return r
     return r
 
-
 def make_integer_ticks_include_end(x_end: float, n: int = 7):
     if x_end <= 0:
         return [0]
@@ -270,12 +286,10 @@ def make_integer_ticks_include_end(x_end: float, n: int = 7):
     ticks = np.unique(ticks)
     return ticks.tolist()
 
-
 def ceil_to_nice_int(v: float, step: int = 50) -> int:
     if v <= 0:
         return step
     return int(np.ceil(v / step) * step)
-
 
 # ============================================================
 # Load artifacts
@@ -299,7 +313,6 @@ cfg = meta.get("cfg", {})
 
 log_X = bool(cfg.get("log_transform_X", True))
 log_Y = bool(cfg.get("log_transform_Y", True))
-
 
 # ============================================================
 # Preprocessing + prediction
@@ -327,7 +340,6 @@ def predict_one(row_dict):
     Yz1 = predict_multioutput_xgb(models, Xz1)
     Yo1 = inv_Y(Yz1)[0]
     return {YVARS[i]: float(Yo1[i]) for i in range(len(YVARS))}
-
 
 # ============================================================
 # Curve construction (plotted in mm)
@@ -362,7 +374,6 @@ def extend_to_axis_end(x_mm, y_kN, axis_end_mm):
         x2.append(axis_end_mm)
         y2.append(last_y)
     return x2, y2
-
 
 # ============================================================
 # PAGE
@@ -423,27 +434,18 @@ with left:
 with right:
     st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
 
-    # ------------------------------------------------------------
-    # Banner title above figure
-    # ------------------------------------------------------------
+    # Title above figure
     st.markdown("<div class='sec-h' style='margin-top:2px;'>Infill configuration</div>", unsafe_allow_html=True)
 
     # Banner figure
     banner_path = ART_DIR / "assets" / "images" / "frame_banner.png"
     if banner_path.exists():
-        # Larger width helps readability of IP/IP_GS text in the image
         st.image(str(banner_path), width=BANNER_WIDTH_PX)
     else:
         st.warning("Missing banner: assets/images/frame_banner.png")
 
-    # ------------------------------------------------------------
-    # Output caption BELOW the infill configuration figure (as requested)
-    # ------------------------------------------------------------
+    # Caption directly BELOW the infill configuration figure (as requested)
     st.markdown('<div class="app-caption">Compact inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
-
-    # Optional warning if Times New Roman font file is missing on Cloud
-    if not HAS_TNR:
-        st.caption("Note: For exact Times New Roman on Streamlit Cloud plots, add assets/fonts/TimesNewRoman.ttf")
 
     run = st.button("Predict pushover curve parameters", key="run_btn")
 
@@ -497,9 +499,9 @@ with right:
             ys = np.interp(xs, x_mm, y_kN)
             ax.plot(xs, ys, linewidth=1.0, color=color, linestyle=ls, label=name)
 
-        # Force Times New Roman explicitly (works if font is available, else matplotlib fallback)
-        ax.set_xlabel("Displacement (mm)", fontname="Times New Roman", fontsize=PLOT_AXIS_LABEL_PT)
-        ax.set_ylabel("Base Shear (kN)", fontname="Times New Roman", fontsize=PLOT_AXIS_LABEL_PT)
+        # Use the loaded font name from repo
+        ax.set_xlabel("Displacement (mm)", fontname=PLOT_FONT_NAME, fontsize=PLOT_AXIS_LABEL_PT)
+        ax.set_ylabel("Base Shear (kN)", fontname=PLOT_FONT_NAME, fontsize=PLOT_AXIS_LABEL_PT)
 
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.0, axis_end)
@@ -516,12 +518,12 @@ with right:
 
         ax.tick_params(axis="both", labelsize=PLOT_TICK_FONT_PT)
         for t in ax.get_xticklabels() + ax.get_yticklabels():
-            t.set_fontname("Times New Roman")
+            t.set_fontname(PLOT_FONT_NAME)
             t.set_fontsize(PLOT_TICK_FONT_PT)
 
         leg = ax.legend(loc="upper right", frameon=False, fontsize=PLOT_LEGEND_FONT_PT)
         for txt in leg.get_texts():
-            txt.set_fontname("Times New Roman")
+            txt.set_fontname(PLOT_FONT_NAME)
 
         fig.tight_layout(pad=0.6)
         st.pyplot(fig, clear_figure=True, use_container_width=False)
