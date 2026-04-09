@@ -17,7 +17,7 @@ from matplotlib import font_manager
 FONT_FAMILY = "Times New Roman"
 
 TITLE_FONT_PX          = 22   # main title text
-CAPTION_FONT_PX        = 14   # "Compact inputs..." line
+CAPTION_FONT_PX        = 14   # caption text under banner
 SECTION_HEADER_PX      = 16   # "Inputs" / "Outputs" / "F–D plot (scenarios)"
 
 INPUT_LABEL_FONT_PX    = 14   # captions like "Bay width (bw) [mm]"
@@ -28,21 +28,14 @@ BUTTON_FONT_PX         = 14   # Predict + Download buttons
 # Plot fonts (matplotlib)
 PLOT_AXIS_LABEL_PT     = 10   # x/y label font
 PLOT_TICK_FONT_PT      = 10   # tick labels
-PLOT_LEGEND_FONT_PT    = 8   # legend text
+PLOT_LEGEND_FONT_PT    = 8    # legend text
 
-# Prefer Times New Roman locally; fall back to Liberation Serif (available on Linux/Streamlit Cloud)
-mpl.rcParams["font.family"] = "serif"
-mpl.rcParams["font.serif"] = ["Times New Roman", "Liberation Serif", "DejaVu Serif"]
-
-mpl.rcParams["axes.labelsize"] = PLOT_AXIS_LABEL_PT
-mpl.rcParams["xtick.labelsize"] = PLOT_TICK_FONT_PT
-mpl.rcParams["ytick.labelsize"] = PLOT_TICK_FONT_PT
-mpl.rcParams["legend.fontsize"] = PLOT_LEGEND_FONT_PT
+# Banner image size (increase slightly for readability)
+BANNER_WIDTH_PX        = 560  # try 520–620 for best A4 fit
 
 # ============================================================
 # MODEL/UNITS
 # ============================================================
-# Based on your current correct setup: model outputs D2 in mm
 D2_MODEL_IS_MM = True
 K_LABEL = "kN/mm"  # labels only (no numeric scaling)
 
@@ -51,6 +44,31 @@ K_LABEL = "kN/mm"  # labels only (no numeric scaling)
 # ============================================================
 st.set_page_config(page_title="Pushover Predictor (XGB)", page_icon="🧱", layout="wide")
 ART_DIR = Path(__file__).resolve().parent
+
+# ============================================================
+# OPTIONAL: EXACT TIMES NEW ROMAN FOR PLOT ON STREAMLIT CLOUD
+# Put the font file here:
+#   assets/fonts/TimesNewRoman.ttf
+# ============================================================
+def force_times_new_roman_if_available():
+    font_path = ART_DIR / "assets" / "fonts" / "TimesNewRoman.ttf"
+    if font_path.exists():
+        font_manager.fontManager.addfont(str(font_path))
+        mpl.rcParams["font.family"] = "Times New Roman"
+        mpl.rcParams["font.serif"] = ["Times New Roman"]
+        return True
+    else:
+        # fallback: still a serif but not exact Times New Roman
+        mpl.rcParams["font.family"] = "serif"
+        mpl.rcParams["font.serif"] = ["Liberation Serif", "DejaVu Serif"]
+        return False
+
+HAS_TNR = force_times_new_roman_if_available()
+
+mpl.rcParams["axes.labelsize"] = PLOT_AXIS_LABEL_PT
+mpl.rcParams["xtick.labelsize"] = PLOT_TICK_FONT_PT
+mpl.rcParams["ytick.labelsize"] = PLOT_TICK_FONT_PT
+mpl.rcParams["legend.fontsize"] = PLOT_LEGEND_FONT_PT
 
 # ============================================================
 # INPUT LABEL DEFINITIONS (HTML)
@@ -70,7 +88,6 @@ FEATURE_UI = {
     "rhoB": {"label": "Reinf. ratio (beam)", "symbol_html": "&rho;<sub>b</sub>", "unit_html": "-"},
 }
 
-# CSV headers (ONLY D2 in mm)
 OUTPUT_HEADER_TXT = {
     "Scenario": "Scenario",
     "F1": "F1 (kN)",
@@ -88,12 +105,10 @@ OUTPUT_HEADER_TXT = {
 st.markdown(
 f"""
 <style>
-/* Global font */
 html, body, [class*="css"], [data-testid="stAppViewContainer"] {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
 }}
 
-/* Force Times New Roman for Streamlit headings/subheaders too */
 div[data-testid="stAppViewContainer"] h1,
 div[data-testid="stAppViewContainer"] h2,
 div[data-testid="stAppViewContainer"] h3,
@@ -110,7 +125,6 @@ div[data-testid="stAppViewContainer"] h6 * {{
   color: #000000 !important;
 }}
 
-/* Custom title */
 .app-title {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   font-size: {TITLE_FONT_PX}px !important;
@@ -120,16 +134,15 @@ div[data-testid="stAppViewContainer"] h6 * {{
   line-height: 1.15 !important;
 }}
 
-/* Caption */
 .app-caption {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   font-size: {CAPTION_FONT_PX}px !important;
   color: #000000 !important;
   opacity: 0.85;
-  margin-bottom: 16px;
+  margin-top: 6px;
+  margin-bottom: 12px;
 }}
 
-/* Our own section headings */
 .sec-h {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   font-size: {SECTION_HEADER_PX}px !important;
@@ -139,7 +152,6 @@ div[data-testid="stAppViewContainer"] h6 * {{
   line-height: 1.15 !important;
 }}
 
-/* Input caption labels */
 .input-label {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   font-size: {INPUT_LABEL_FONT_PX}px !important;
@@ -147,21 +159,18 @@ div[data-testid="stAppViewContainer"] h6 * {{
   margin-bottom: 0.12rem !important;
 }}
 
-/* Selectbox visible + internal */
 div[data-testid="stSelectbox"] * {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   color: #000000 !important;
   font-size: {INPUT_WIDGET_FONT_PX}px !important;
 }}
 
-/* Dropdown menu items */
 div[data-baseweb="popover"] * {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   color: #000000 !important;
   font-size: {INPUT_WIDGET_FONT_PX}px !important;
 }}
 
-/* Text input */
 div[data-testid="stTextInput"] input {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   color: #000000 !important;
@@ -170,21 +179,18 @@ div[data-testid="stTextInput"] input {{
   padding-bottom: 2px !important;
 }}
 
-/* Buttons (Predict + Download) */
 button, button * {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   color: #000000 !important;
   font-size: {BUTTON_FONT_PX}px !important;
 }}
 
-/* If download renders as a link */
 a, a * {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   color: #000000 !important;
   font-size: {BUTTON_FONT_PX}px !important;
 }}
 
-/* Compact widget width */
 div[data-testid="stSelectbox"], div[data-testid="stTextInput"] {{
   max-width: 170px !important;
 }}
@@ -192,18 +198,6 @@ div[data-testid="stSelectbox"], div[data-testid="stTextInput"] {{
 """,
 unsafe_allow_html=True
 )
-
-# ============================================================
-# Matplotlib font controls (plot)
-# ============================================================
-plt.rcParams.update({
-    "font.family": FONT_FAMILY,
-    "font.size": PLOT_AXIS_LABEL_PT,
-    "axes.labelsize": PLOT_AXIS_LABEL_PT,
-    "xtick.labelsize": PLOT_TICK_FONT_PT,
-    "ytick.labelsize": PLOT_TICK_FONT_PT,
-    "legend.fontsize": PLOT_LEGEND_FONT_PT,
-})
 
 # ============================================================
 # Helpers
@@ -377,7 +371,6 @@ st.markdown(
     "<div class='app-title'>Pushover Curve predictor for multi-story masonry infilled reinforced concrete frames (XGB)</div>",
     unsafe_allow_html=True,
 )
-#st.markdown('<div class="app-caption">inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
 
 left, right = st.columns([0.45, 0.55], gap="small")
 
@@ -430,15 +423,27 @@ with left:
 with right:
     st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
 
-    # ============================================================
-    # (ADDED) OUTPUT BANNER IMAGE AT TOP (A4-FRIENDLY)
-    # Save the image at: assets/images/frame_banner.png
-    # ============================================================
+    # ------------------------------------------------------------
+    # Banner title above figure
+    # ------------------------------------------------------------
+    st.markdown("<div class='sec-h' style='margin-top:2px;'>Infill configuration</div>", unsafe_allow_html=True)
+
+    # Banner figure
     banner_path = ART_DIR / "assets" / "images" / "frame_banner.png"
     if banner_path.exists():
-        # small A4-friendly size (fits in output column)
-        st.image(str(banner_path), width=520)
-    # else: silently ignore if not present (keeps app unchanged)
+        # Larger width helps readability of IP/IP_GS text in the image
+        st.image(str(banner_path), width=BANNER_WIDTH_PX)
+    else:
+        st.warning("Missing banner: assets/images/frame_banner.png")
+
+    # ------------------------------------------------------------
+    # Output caption BELOW the infill configuration figure (as requested)
+    # ------------------------------------------------------------
+    st.markdown('<div class="app-caption">Compact inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
+
+    # Optional warning if Times New Roman font file is missing on Cloud
+    if not HAS_TNR:
+        st.caption("Note: For exact Times New Roman on Streamlit Cloud plots, add assets/fonts/TimesNewRoman.ttf")
 
     run = st.button("Predict pushover curve parameters", key="run_btn")
 
@@ -492,8 +497,10 @@ with right:
             ys = np.interp(xs, x_mm, y_kN)
             ax.plot(xs, ys, linewidth=1.0, color=color, linestyle=ls, label=name)
 
-        ax.set_xlabel("Displacement (mm)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
-        ax.set_ylabel("Base Shear (kN)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
+        # Force Times New Roman explicitly (works if font is available, else matplotlib fallback)
+        ax.set_xlabel("Displacement (mm)", fontname="Times New Roman", fontsize=PLOT_AXIS_LABEL_PT)
+        ax.set_ylabel("Base Shear (kN)", fontname="Times New Roman", fontsize=PLOT_AXIS_LABEL_PT)
+
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.0, axis_end)
 
@@ -509,17 +516,17 @@ with right:
 
         ax.tick_params(axis="both", labelsize=PLOT_TICK_FONT_PT)
         for t in ax.get_xticklabels() + ax.get_yticklabels():
-            t.set_fontname("serif")
+            t.set_fontname("Times New Roman")
             t.set_fontsize(PLOT_TICK_FONT_PT)
 
-        leg = ax.legend(loc="upper right", bbox_to_anchor=(1.04, 1.04), frameon=False, fontsize=PLOT_LEGEND_FONT_PT)
+        leg = ax.legend(loc="upper right", frameon=False, fontsize=PLOT_LEGEND_FONT_PT)
         for txt in leg.get_texts():
-            txt.set_fontname("serif")
+            txt.set_fontname("Times New Roman")
 
         fig.tight_layout(pad=0.6)
         st.pyplot(fig, clear_figure=True, use_container_width=False)
 
-        # keep CSV download only (removed plot download per request)
+        # keep CSV download only
         df_out = pd.DataFrame(scenario_rows)
 
         st.download_button(
