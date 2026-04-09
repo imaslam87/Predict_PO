@@ -429,6 +429,17 @@ with left:
 
 with right:
     st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
+
+    # ============================================================
+    # (ADDED) OUTPUT BANNER IMAGE AT TOP (A4-FRIENDLY)
+    # Save the image at: assets/images/frame_banner.png
+    # ============================================================
+    banner_path = ART_DIR / "assets" / "images" / "frame_banner.png"
+    if banner_path.exists():
+        # small A4-friendly size (fits in output column)
+        st.image(str(banner_path), width=520)
+    # else: silently ignore if not present (keeps app unchanged)
+
     run = st.button("Predict pushover curve parameters", key="run_btn")
 
     if "run_state" not in st.session_state:
@@ -485,10 +496,6 @@ with right:
         ax.set_ylabel("Base Shear (kN)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.0, axis_end)
- 
-#        ax.set_xlabel("Displacement (mm)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT)
-#        ax.set_ylabel("Base Shear (kN)", fontname="serif", fontsize=PLOT_AXIS_LABEL_PT) 
-        
 
         all_y = np.concatenate([np.array(c[4], dtype=float) for c in curves]) if curves else np.array([1.0])
         y_max = float(np.max(all_y)) * 1.05
@@ -512,19 +519,8 @@ with right:
         fig.tight_layout(pad=0.6)
         st.pyplot(fig, clear_figure=True, use_container_width=False)
 
-        png_buf = BytesIO()
-        fig.savefig(png_buf, format="png", dpi=300, bbox_inches="tight")
-        png_buf.seek(0)
-
+        # keep CSV download only (removed plot download per request)
         df_out = pd.DataFrame(scenario_rows)
-
-        st.download_button(
-            "Download F–D plot (PNG)",
-            data=png_buf,
-            file_name="pushover_fd_plot_scenarios.png",
-            mime="image/png",
-            key="dl_png",
-        )
 
         st.download_button(
             "Download scenario predictions (CSV)",
