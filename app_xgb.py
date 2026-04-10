@@ -445,7 +445,7 @@ with right:
         st.warning("Missing banner: assets/images/frame_banner.png")
 
     # Caption directly BELOW the infill configuration figure (as requested)
-    st.markdown('<div class="app-caption">Compact inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
+    #st.markdown('<div class="app-caption">Compact inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
 
     run = st.button("Predict pushover curve parameters", key="run_btn")
 
