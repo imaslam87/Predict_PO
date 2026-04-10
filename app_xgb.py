@@ -432,7 +432,7 @@ with left:
     st.session_state["inputs_dict"] = inputs
 
 with right:
-    st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
+    #st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
 
     # Title above figure
     st.markdown("<div class='sec-h' style='margin-top:2px;'>Infill configuration</div>", unsafe_allow_html=True)
