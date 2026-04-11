@@ -17,12 +17,10 @@ from matplotlib import font_manager
 FONT_FAMILY = "Times New Roman"
 
 TITLE_FONT_PX          = 22   # main title text
-CAPTION_FONT_PX        = 14   # caption text under banner
-SECTION_HEADER_PX      = 16   # "Inputs" / "Outputs" / "F–D plot (scenarios)"
+SECTION_HEADER_PX      = 16   # "Inputs" / section headings
 
 INPUT_LABEL_FONT_PX    = 14   # captions like "Bay width (bw) [mm]"
 INPUT_WIDGET_FONT_PX   = 14   # dropdown selected value + dropdown list + text boxes
-
 BUTTON_FONT_PX         = 14   # Predict + Download buttons
 
 # Plot fonts (matplotlib)
@@ -30,8 +28,12 @@ PLOT_AXIS_LABEL_PT     = 10   # x/y label font
 PLOT_TICK_FONT_PT      = 10   # tick labels
 PLOT_LEGEND_FONT_PT    = 8    # legend text
 
-# Banner image size (increase slightly for readability)
-BANNER_WIDTH_PX        = 560  # try 520–620 for best A4 fit
+# Banner image size
+BANNER_USE_CONTAINER_WIDTH = True
+BANNER_WIDTH_PX = 560  # used only if BANNER_USE_CONTAINER_WIDTH=False
+
+# Banner caption font size
+BANNER_CAPTION_PX = 12
 
 # ============================================================
 # MODEL/UNITS
@@ -61,31 +63,24 @@ def force_times_from_repo():
         font_dir / "timesi.ttf",   # italic
         font_dir / "timesbi.ttf",  # bold italic
     ]
-
     existing = [p for p in candidates if p.exists()]
+
     if not existing:
-        # fallback if fonts not present
         mpl.rcParams["font.family"] = "serif"
         mpl.rcParams["font.serif"] = ["Liberation Serif", "DejaVu Serif"]
         return "serif"
 
-    # Register all available fonts
     for fp in existing:
         font_manager.fontManager.addfont(str(fp))
 
-    # Get the *actual registered name* from the regular file
-    # This is crucial on Streamlit Cloud/Linux.
     base_fp = existing[0]
     font_name = font_manager.FontProperties(fname=str(base_fp)).get_name()
-
     mpl.rcParams["font.family"] = font_name
     mpl.rcParams["font.serif"] = [font_name]
-
     return font_name
 
 PLOT_FONT_NAME = force_times_from_repo()
 
-# Apply plot sizes
 mpl.rcParams["axes.labelsize"] = PLOT_AXIS_LABEL_PT
 mpl.rcParams["xtick.labelsize"] = PLOT_TICK_FONT_PT
 mpl.rcParams["ytick.labelsize"] = PLOT_TICK_FONT_PT
@@ -155,15 +150,6 @@ div[data-testid="stAppViewContainer"] h6 * {{
   line-height: 1.15 !important;
 }}
 
-.app-caption {{
-  font-family: "{FONT_FAMILY}", Times, serif !important;
-  font-size: {CAPTION_FONT_PX}px !important;
-  color: #000000 !important;
-  opacity: 0.85;
-  margin-top: 6px;
-  margin-bottom: 12px;
-}}
-
 .sec-h {{
   font-family: "{FONT_FAMILY}", Times, serif !important;
   font-size: {SECTION_HEADER_PX}px !important;
@@ -214,6 +200,17 @@ a, a * {{
 
 div[data-testid="stSelectbox"], div[data-testid="stTextInput"] {{
   max-width: 170px !important;
+}}
+
+/* Banner captions */
+.banner-cap {{
+  font-family: "{FONT_FAMILY}", Times, serif !important;
+  font-style: italic !important;
+  font-size: {BANNER_CAPTION_PX}px !important;
+  text-align: center !important;
+  color: #000 !important;
+  line-height: 1.05 !important;
+  margin-top: -6px !important;
 }}
 </style>
 """,
@@ -432,20 +429,42 @@ with left:
     st.session_state["inputs_dict"] = inputs
 
 with right:
-    #st.markdown("<div class='sec-h'>Outputs</div>", unsafe_allow_html=True)
+    # (Removed "Outputs" heading as per your earlier request)
 
     # Title above figure
     st.markdown("<div class='sec-h' style='margin-top:2px;'>Infill configuration</div>", unsafe_allow_html=True)
 
-    # Banner figure
+    # Banner image
     banner_path = ART_DIR / "assets" / "images" / "frame_banner.png"
     if banner_path.exists():
-        st.image(str(banner_path), width=BANNER_WIDTH_PX)
+        if BANNER_USE_CONTAINER_WIDTH:
+            st.image(str(banner_path), use_container_width=True)
+        else:
+            st.image(str(banner_path), width=BANNER_WIDTH_PX)
     else:
         st.warning("Missing banner: assets/images/frame_banner.png")
 
-    # Caption directly BELOW the infill configuration figure (as requested)
-    #st.markdown('<div class="app-caption">Compact inputs on left. Outputs on right.</div>', unsafe_allow_html=True)
+    # Captions under each configuration (6 frames assumed)
+    cap_cols = st.columns(6, gap="small")
+    caps = [
+        ("0", "0"),
+        ("25", "25"),
+        ("50", "50"),
+        ("75", "75"),
+        ("56", "0"),
+        ("100", "100"),
+    ]
+    for i, (ip, ipgs) in enumerate(caps):
+        with cap_cols[i]:
+            st.markdown(
+                f"""
+                <div class="banner-cap">
+                  <i>IP</i> = {ip}%<br/>
+                  <i>IP</i><sub>GS</sub> = {ipgs}%
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
     run = st.button("Predict pushover curve parameters", key="run_btn")
 
@@ -499,7 +518,6 @@ with right:
             ys = np.interp(xs, x_mm, y_kN)
             ax.plot(xs, ys, linewidth=1.0, color=color, linestyle=ls, label=name)
 
-        # Use the loaded font name from repo
         ax.set_xlabel("Displacement (mm)", fontname=PLOT_FONT_NAME, fontsize=PLOT_AXIS_LABEL_PT)
         ax.set_ylabel("Base Shear (kN)", fontname=PLOT_FONT_NAME, fontsize=PLOT_AXIS_LABEL_PT)
 
@@ -528,7 +546,6 @@ with right:
         fig.tight_layout(pad=0.6)
         st.pyplot(fig, clear_figure=True, use_container_width=False)
 
-        # keep CSV download only
         df_out = pd.DataFrame(scenario_rows)
 
         st.download_button(
