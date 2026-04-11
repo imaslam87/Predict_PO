@@ -35,7 +35,7 @@ BANNER_WIDTH_PX = 480  # used only if BANNER_USE_CONTAINER_WIDTH=False
 
 
 # Banner caption font size
-BANNER_CAPTION_PX = 11
+BANNER_CAPTION_PX = 9
 
 # ============================================================
 # MODEL/UNITS
@@ -468,7 +468,9 @@ with right:
                 unsafe_allow_html=True
             )
 
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)  # increase/decrease 12px
     run = st.button("Predict pushover curve parameters", key="run_btn")
+    #run = st.button("Predict pushover curve parameters", key="run_btn")
 
     if "run_state" not in st.session_state:
         st.session_state["run_state"] = False
