@@ -35,7 +35,7 @@ BANNER_WIDTH_PX = 480  # used only if BANNER_USE_CONTAINER_WIDTH=False
 
 
 # Banner caption font size
-BANNER_CAPTION_PX = 9
+BANNER_CAPTION_PX = 10
 
 # ============================================================
 # MODEL/UNITS
