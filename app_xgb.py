@@ -31,11 +31,11 @@ PLOT_LEGEND_FONT_PT    = 8    # legend text
 # Banner image size
 BANNER_USE_CONTAINER_WIDTH = True
 #BANNER_WIDTH_PX = 560  # used only if BANNER_USE_CONTAINER_WIDTH=False
-BANNER_WIDTH_PX = 480  # used only if BANNER_USE_CONTAINER_WIDTH=False
+BANNER_WIDTH_PX = 450  # used only if BANNER_USE_CONTAINER_WIDTH=False
 
 
 # Banner caption font size
-BANNER_CAPTION_PX = 10
+BANNER_CAPTION_PX = 9.0
 
 # ============================================================
 # MODEL/UNITS
